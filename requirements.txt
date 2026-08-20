@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+
+# 可选：接 MySQL / PostgreSQL 时才需要
+# pymysql
+# psycopg2-binary
+
+# 可选：ServerChan 微信推送（默认不推）
+# requests
