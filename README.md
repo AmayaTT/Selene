@@ -288,4 +288,4 @@ CREATE TABLE feed_log (
 
 ---
 
-Selene，写给每一个值得被认真对待的身体。🌙
+Selene，写给每一个值得被认真对待的女性。🌙
