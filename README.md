@@ -91,6 +91,8 @@ MCP 服务暴露这些工具：`selene_record`（记录经期）、`selene_statu
 python selene_server.py   # 默认端口 8003
 ```
 
+> 端口想换的话，启动时加参数就行：`python selene_server.py 8004`（MCP 服务的 URL 也要跟着改成对应端口）。
+
 然后在支持 Streamable HTTP 的 MCP 客户端中添加一个服务器：
 
 ```json
@@ -103,6 +105,8 @@ python selene_server.py   # 默认端口 8003
 }
 ```
 
+> 上面的 `8003` 是默认端口，若你启动时改了端口，URL 里也要同步改。
+>
 > 提示：Web 端（8010）与 MCP 端（8003）共用同一个本地 SQLite，数据仍只存在你自己的机器上。MCP 的 `selene_status` 工具默认就是**伴侣语气**（`couple_mode=true`），也可以传 `couple_mode=false` 切中性语气。
 
 ---
