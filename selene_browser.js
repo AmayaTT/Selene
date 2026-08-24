@@ -54,6 +54,19 @@ async function apiPost(path, body) {
     return null;
   }
 }
+function localDateStr(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function cycleDayFromStart(periodStart, cycleLength = 28) {
+  if (!periodStart) return 1;
+  const start = new Date(`${periodStart}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return 1;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.floor((today - start) / 86400000);
+  if (diff < 0) return 1;
+  return diff % Math.max(21, Number(cycleLength) || 28) + 1;
+}
 const PHASES = [{
   name: "月经期",
   days: [1, 5],
@@ -78,7 +91,7 @@ const PHASES = [{
 function getPhase(day) {
   return PHASES.find(p => day >= p.days[0] && day <= p.days[1]) || PHASES[3];
 }
-const SYMPTOMS_LIST = ["头疼", "腰酸", "水肿", "乳房胀", "痛经", "疲惫", "失眠", "食欲旺盛", "情绪波动", "状态良好"];
+const SYMPTOMS_LIST = ["头疼", "偏头痛", "头晕", "腰酸", "腿酸", "水肿", "乳房胀痛", "小腹坠痛", "痛经", "腹痛", "腹胀", "恶心", "腹泻", "便秘", "食欲旺盛", "食欲不振", "疲惫", "乏力", "失眠", "嗜睡", "长痘", "畏寒", "情绪波动", "易怒", "焦虑", "心情低落", "状态良好"];
 const MOOD_EMOJIS = [{
   score: 2,
   emoji: "😞",
@@ -351,12 +364,24 @@ function SymptomLogger({
   const phase = getPhase(day);
   const selected = symptomLog[day] || [];
   const isGood = selected.includes("状态良好");
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customText, setCustomText] = useState("");
   function handleToggle(s) {
     if (s === "状态良好") {
       onToggle(day, "__good__");
     } else {
       if (!isGood) onToggle(day, s);
     }
+  }
+  function openCustom() {
+    setCustomText("");
+    setCustomOpen(true);
+  }
+  function submitCustom() {
+    const text = customText.trim();
+    setCustomOpen(false);
+    if (!text || selected.includes(text)) return;
+    onToggle(day, text);
   }
   return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "今日症状"), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -381,7 +406,69 @@ function SymptomLogger({
         cursor: disabled ? "not-allowed" : "pointer"
       }
     }, isGoodTag ? "✨ " + s : s);
-  })), selected.length > 0 && !isGood && /*#__PURE__*/React.createElement("div", {
+  }), customOpen ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      width: "100%"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    autoFocus: true,
+    value: customText,
+    onChange: e => setCustomText(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") submitCustom();
+    },
+    placeholder: "输入自定义症状",
+    style: {
+      flex: 1,
+      padding: "6px 12px",
+      borderRadius: 20,
+      fontSize: 13,
+      border: "1px dashed #D8D4E0",
+      background: C.bg,
+      color: C.text,
+      outline: "none"
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: submitCustom,
+    style: {
+      padding: "6px 12px",
+      borderRadius: 20,
+      fontSize: 13,
+      border: "1px solid #D8D4E0",
+      background: C.sage + "33",
+      color: C.text,
+      cursor: "pointer"
+    }
+  }, "✓"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setCustomOpen(false);
+      setCustomText("");
+    },
+    style: {
+      padding: "6px 12px",
+      borderRadius: 20,
+      fontSize: 13,
+      border: "1px solid #D8D4E0",
+      background: "transparent",
+      color: C.textLight,
+      cursor: "pointer"
+    }
+  }, "✕")) : /*#__PURE__*/React.createElement("button", {
+    onClick: openCustom,
+    disabled: isGood,
+    style: {
+      padding: "6px 14px",
+      borderRadius: 20,
+      fontSize: 13,
+      border: "1px dashed #D8D4E0",
+      background: "transparent",
+      color: isGood ? "#C8C4D0" : C.textLight,
+      cursor: isGood ? "not-allowed" : "pointer"
+    }
+  }, "+ 自定义")), selected.length > 0 && !isGood && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 12,
       fontSize: 12,
@@ -1380,7 +1467,7 @@ function BottomNav({
 // ═══════════════════════════════════════════
 
 function Selene() {
-  const [day, setDay] = useState(17);
+  const [day, setDay] = useState(1);
   const [moodLog, setMoodLog] = useState({});
   const [symptomLog, setSymptomLog] = useState({});
   const [tab, setTab] = useState("home");
@@ -1439,6 +1526,7 @@ function Selene() {
         if (cfg.cycleLength) setCycleLength(cfg.cycleLength);
         if (cfg.periodStart) setPeriodStart(cfg.periodStart);
         if (cfg.periodEnd) setPeriodEnd(cfg.periodEnd);
+        setDay(cycleDayFromStart(cfg.periodStart, cfg.cycleLength));
       }
       const rem = await apiGet("/reminder_config");
       if (rem) {
@@ -1455,7 +1543,25 @@ function Selene() {
       periodStart,
       periodEnd
     });
+    if (r) setDay(cycleDayFromStart(periodStart, cycleLength));
     setSaveMsg(r ? "周期设置已保存 ✓" : "保存失败，请重试");
+    setTimeout(() => setSaveMsg(null), 3000);
+  }
+  async function markPeriodStart() {
+    if (!periodStart) {
+      setSaveMsg("先选择是哪一天来的");
+      setTimeout(() => setSaveMsg(null), 3000);
+      return;
+    }
+    const safeEnd = periodEnd && periodEnd < periodStart ? "" : periodEnd;
+    if (safeEnd !== periodEnd) setPeriodEnd("");
+    const r = await apiPost("/save_config", {
+      cycleLength,
+      periodStart,
+      periodEnd: safeEnd
+    });
+    if (r) setDay(cycleDayFromStart(periodStart, cycleLength));
+    setSaveMsg(r ? `已标记 ${periodStart} 来了 ✓` : "标记失败，请重试");
     setTimeout(() => setSaveMsg(null), 3000);
   }
   async function saveReminder() {
@@ -1659,7 +1765,8 @@ function Selene() {
       position: "relative"
     }
   }, /*#__PURE__*/React.createElement(MoonRing, {
-    day: day
+    day: day,
+    total: cycleLength
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "0 20px 4px",
@@ -1671,8 +1778,8 @@ function Selene() {
   }, /*#__PURE__*/React.createElement("input", {
     type: "range",
     min: 1,
-    max: 28,
-    value: day,
+    max: cycleLength,
+    value: Math.min(day, cycleLength),
     onChange: e => setDay(Number(e.target.value)),
     style: {
       width: "100%",
@@ -1686,14 +1793,52 @@ function Selene() {
       fontSize: 10,
       color: sky.stars + "88"
     }
-  }, /*#__PURE__*/React.createElement("span", null, "Day 1"), /*#__PURE__*/React.createElement("span", null, "Day 28")))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Day 1"), /*#__PURE__*/React.createElement("span", null, "Day ", cycleLength)))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
       gap: 12,
       padding: "16px 16px 0"
     }
-  }, /*#__PURE__*/React.createElement(MoodLogger, {
+  }, /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "经期标记"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textLight,
+      marginBottom: 10
+    }
+  }, "在哪一天来了？选日期后标记，周期会从这一天重新计算。"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: periodStart,
+    max: localDateStr(),
+    onChange: e => setPeriodStart(e.target.value),
+    style: {
+      flex: 1,
+      minWidth: 0,
+      padding: "8px 10px",
+      borderRadius: 12,
+      border: "1px solid #D8D4E0",
+      background: C.bg,
+      color: C.text,
+      fontSize: 13
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: markPeriodStart,
+    style: {
+      padding: "8px 13px",
+      borderRadius: 12,
+      border: "none",
+      background: C.purpleDeep,
+      color: C.white,
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer"
+    }
+  }, "标记来了"))), /*#__PURE__*/React.createElement(MoodLogger, {
     day: day,
     moodLog: moodLog,
     onLog: logMood
