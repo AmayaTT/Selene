@@ -101,6 +101,7 @@ function phaseFromTable(day, table) {
   return PHASES[PHASE_KEYS.indexOf(table[String(day)])] || UNKNOWN_PHASE;
 }
 const PhaseContext = React.createContext(() => UNKNOWN_PHASE);
+const SourceContext = React.createContext({});
 function moodEntries(moodLog) {
   return Object.entries(moodLog).filter(([, score]) => score > 0).sort(([a], [b]) => a.localeCompare(b)).map(([date, mood]) => ({
     date,
@@ -295,9 +296,16 @@ function MoodLogger({
   const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
   const logged = moodLog[logDate];
+  const origin = React.useContext(SourceContext)[logDate]?.mood;
   const [editing, setEditing] = useState(false);
   useEffect(() => setEditing(false), [logDate, logged]);
-  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, logDate === localDateStr() ? "今天心情" : `${logDate} 心情`), logged != null && !editing ? /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, logDate === localDateStr() ? "今天心情" : `${logDate} 心情`), origin?.source === "memora" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textLight,
+      marginBottom: 8
+    }
+  }, "来自 Memora · 自动估算，可手动修改"), logged != null && !editing ? /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -387,6 +395,7 @@ function SymptomLogger({
   const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
   const selected = symptomLog[logDate] || [];
+  const origin = React.useContext(SourceContext)[logDate]?.symptoms;
   const isGood = selected.includes("状态良好");
   const [customOpen, setCustomOpen] = useState(false);
   const [customText, setCustomText] = useState("");
@@ -407,7 +416,13 @@ function SymptomLogger({
     if (!text || selected.includes(text)) return;
     onToggle(logDate, text);
   }
-  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, logDate === localDateStr() ? "今日症状" : `${logDate} 症状`), /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, logDate === localDateStr() ? "今日症状" : `${logDate} 症状`), ["memora", "mixed"].includes(origin?.source) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textLight,
+      marginBottom: 8
+    }
+  }, "包含从 Memora 同步的症状"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
@@ -1534,6 +1549,7 @@ function Selene() {
   const [moodLog, setMoodLog] = useState({});
   const [symptomLog, setSymptomLog] = useState({});
   const [dateInfo, setDateInfo] = useState({});
+  const [logSources, setLogSources] = useState({});
   const symptomRef = React.useRef({});
   const saveQueue = React.useRef(Promise.resolve());
   const [tab, setTab] = useState("home");
@@ -1547,6 +1563,8 @@ function Selene() {
   const [remindTimes, setRemindTimes] = useState("08:30");
   const [coupleMode, setCoupleMode] = useState(true);
   const [reminderMsg, setReminderMsg] = useState(null);
+  const [careCtx, setCareCtx] = useState(null);
+  const careRequest = React.useRef(0);
   const cycleStart = new Date(`${savedCycle.periodStart}T00:00:00`);
   const phase = getPhase(day);
   function queueSave(action) {
@@ -1571,6 +1589,15 @@ function Selene() {
         ...prev,
         [result.date]: result.score
       }));
+      setLogSources(prev => ({
+        ...prev,
+        [result.date]: {
+          ...prev[result.date],
+          mood: {
+            source: "manual"
+          }
+        }
+      }));
       setDateInfo(prev => ({
         ...prev,
         [result.date]: {
@@ -1578,6 +1605,22 @@ function Selene() {
           phase: result.phase
         }
       }));
+      const request = ++careRequest.current;
+      if (score >= 1 && score <= 4) {
+        apiPost("/care_low_mood", {
+          day: result.day,
+          date: result.date,
+          score,
+          phase: result.phase
+        }).then(care => {
+          if (request === careRequest.current && !care?.skipped) {
+            setCareCtx(care || {
+              memora_ok: false,
+              related: []
+            });
+          }
+        });
+      }
       return true;
     });
   }
@@ -1596,6 +1639,15 @@ function Selene() {
         [result.date]: result.symptoms
       };
       setSymptomLog(symptomRef.current);
+      setLogSources(prev => ({
+        ...prev,
+        [result.date]: {
+          ...prev[result.date],
+          symptoms: {
+            source: "manual"
+          }
+        }
+      }));
       setDateInfo(prev => ({
         ...prev,
         [result.date]: {
@@ -1616,6 +1668,7 @@ function Selene() {
           setSymptomLog(logs.symptomLog);
         }
         if (logs.dateInfo) setDateInfo(logs.dateInfo);
+        if (logs.logSources) setLogSources(logs.logSources);
       }
       const cfg = await apiGet("/get_config");
       if (cfg) {
@@ -1634,6 +1687,20 @@ function Selene() {
       }
     })();
   }, []);
+  useEffect(() => {
+    if (tab !== "home") return;
+    let active = true;
+    const request = careRequest.current;
+    apiGet("/care/emotion_history?days=30").then(result => {
+      if (active && request === careRequest.current) setCareCtx(result || {
+        memora_ok: false,
+        related: []
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [tab]);
   async function saveConfig() {
     const r = await apiPost("/save_config", {
       cycleLength,
@@ -1758,6 +1825,8 @@ function Selene() {
   }];
   return /*#__PURE__*/React.createElement(PhaseContext.Provider, {
     value: getPhase
+  }, /*#__PURE__*/React.createElement(SourceContext.Provider, {
+    value: logSources
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
@@ -1947,7 +2016,29 @@ function Selene() {
     day: day,
     moodLog: moodLog,
     onLog: logMood
-  }), /*#__PURE__*/React.createElement(SymptomLogger, {
+  }), careCtx && /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "最近的心情"), !careCtx.memora_ok ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.textLight,
+      fontSize: 13
+    }
+  }, "记忆库暂时未连接，不影响在 Selene 记录心情。") : (careCtx.related || []).length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.textLight,
+      fontSize: 13
+    }
+  }, "暂时没有相关记忆。") : (careCtx.related || []).slice(0, 3).map((memory, index) => /*#__PURE__*/React.createElement("div", {
+    key: index,
+    style: {
+      color: C.text,
+      fontSize: 13,
+      lineHeight: 1.6,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.textLight
+    }
+  }, memory.time_ago, " "), memory.content))), /*#__PURE__*/React.createElement(SymptomLogger, {
     day: day,
     symptomLog: symptomLog,
     onToggle: toggleSymptom
@@ -2010,7 +2101,7 @@ function Selene() {
       boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
       zIndex: 200
     }
-  }, saveMsg)));
+  }, saveMsg))));
 }
 (function () {
   var root = ReactDOM.createRoot(document.getElementById("root"));

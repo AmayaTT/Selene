@@ -22,8 +22,9 @@ Selene - REST API 后端
 
 import asyncio
 import sys
+import hashlib
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -49,7 +50,11 @@ def _phase_of_day(day: int) -> str:
 
 def _std_symptoms(symptoms: list) -> list:
     """只保留标准化症状词（白名单在 db.SYMPTOMS_LIST，去掉"状态良好"和自定义文本）。"""
-    return [s for s in (symptoms or []) if s and s != "状态良好"]
+    return [s for s in (symptoms or []) if s in db.SYMPTOMS_LIST and s != "状态良好"]
+
+
+def _record_ok(result):
+    return isinstance(result, dict) and result.get("success") is True and result.get("id") is not None
 
 
 # Windows 控制台默认 GBK，先切到 UTF-8，避免 print emoji/中文崩
@@ -122,6 +127,7 @@ def get_logs():
         "moodLog": db.get_mood_log(),
         "symptomLog": db.get_symptom_log(),
         "dateInfo": db.get_log_date_info(),
+        "logSources": db.sync_storage.get_sources(),
     }
 
 
@@ -175,36 +181,44 @@ async def care_low_mood(body: CareBody):
     1) 把这次低情绪写进 memora（type=feel, importance=5）；
     2) 回看近期相关记忆，返回给前端展示。
     memora 挂了只返回 memora_ok:false，绝不阻塞/报错主流程。"""
-    if body.score > 4 or body.score == -1:
+    if not 1 <= body.score <= 4:
         return {"success": True, "skipped": True}
 
-    date_str = body.date or datetime.now().date().isoformat()
-    std_symptoms = _std_symptoms(body.symptoms)
+    try:
+        date_str = db.normalize_log_date(body.date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    current = db.get_day_log(date_str)
+    if current.get("score") != body.score:
+        return {"success": True, "skipped": True, "reason": "score_changed"}
+    info = db.log_date_info(date_str)
+    std_symptoms = _std_symptoms(current.get("symptoms", []))
     symptoms_txt = "、".join(std_symptoms) if std_symptoms else "无"
     # ★ 措辞必须带"低落"等情绪触发词，memora 才能检测出 sad 情绪标签
     content = (
-        f"【Selene】{date_str} 周期Day{body.day} {body.phase}，"
+        f"【Selene】{date_str} 周期Day{info['day']} {info['phase']}，"
         f"情绪很低落（{body.score}/10），症状：{symptoms_txt}"
     )
 
     # 写 memora（失败返回 None，不影响后续）
     result = await memora_client.record(
-        content, importance=5, mem_type="feel", event_date=date_str
+        content, importance=5, mem_type="feel", event_date=date_str,
+        source_key=db.sync_key("care:" + hashlib.sha256(content.encode()).hexdigest()),
     )
     memory_id = (result or {}).get("id") if result else None
 
     # 回看近期相关记忆（仅 memora 写入成功后才搜）
     related = []
-    if result:
+    if _record_ok(result):
         r = await memora_client.recall("情绪 低落 焦虑 难过", days=30)
         if r:
             related = [
                 {"content": m.get("content", ""), "time_ago": m.get("time_ago", ""), "mood": m.get("mood", "")}
-                for m in (r.get("results") or [])
+                for m in (r.get("results") or []) if m.get("id") != memory_id
             ]
 
-    memora_ok = result is not None
-    db.add_care_log(body.day, date_str, body.score, memory_id, len(related), memora_ok)
+    memora_ok = _record_ok(result)
+    db.add_care_log(info["day"], date_str, body.score, memory_id, len(related), memora_ok)
 
     return {"success": True, "memory_id": memory_id, "related": related, "memora_ok": memora_ok}
 
@@ -240,9 +254,15 @@ async def _feed_loop():
 async def _maybe_feed_daily():
     """每天 21 点（整点小时窗口内，错过也补喂）且当天有记录且未喂过 -> 喂每日状态。"""
     now = datetime.now()
-    if now.hour != 21:
-        return
-    today = now.date().isoformat()
+    candidates = set(db.failed_feed_dates("day"))
+    if now.hour >= 21:
+        candidates.add(now.date().isoformat())
+    for value in sorted(candidates):
+        if value < now.date().isoformat() or (value == now.date().isoformat() and now.hour >= 21):
+            await _feed_daily_date(value)
+
+
+async def _feed_daily_date(today):
     if db.has_feed(today, "day"):
         return
 
@@ -250,8 +270,8 @@ async def _maybe_feed_daily():
     if not log:
         return  # 当天无任何记录，不喂空记忆
 
-    day = log.get("day", 1)
-    phase = _phase_of_day(day)
+    info = db.log_date_info(today)
+    day, phase = info["day"], info["phase"]
     score = log.get("score")
     std_symptoms = _std_symptoms(log.get("symptoms", []))
     score_txt = f"{score}/10" if score and score > 0 else "未记录"
@@ -259,19 +279,26 @@ async def _maybe_feed_daily():
     content = f"【Selene 每日状态】{today} 周期Day{day} {phase}｜情绪 {score_txt}｜症状：{symptoms_txt}"
 
     result = await memora_client.record(
-        content, importance=3, mem_type="digest", event_date=today
+        content, importance=3, mem_type="digest", event_date=today,
+        source_key=db.sync_key("day:" + today),
     )
     memory_id = (result or {}).get("id") if result else None
-    db.add_feed_log(today, "day", memory_id, ok=result is not None)
+    db.add_feed_log(today, "day", memory_id, ok=_record_ok(result))
 
 
 async def _maybe_feed_monthly():
-    """每月 1 日 09 点（整点小时窗口）且本月未生成过月报 -> 生成并注入 memora。"""
+    """生成上月报告，并重试已失败的旧月报；错过整点也可补发。"""
     now = datetime.now()
-    if now.day != 1 or now.hour != 9:
+    if now.day == 1 and now.hour < 9:
         return
-    month = now.strftime("%Y-%m")
-    if db.get_config("last_report_month") == month:
+    month = (now.date().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    candidates = {month} | {value[:7] for value in db.failed_feed_dates("month") if value[:7] <= month}
+    for candidate in sorted(candidates):
+        await _feed_month(candidate)
+
+
+async def _feed_month(month):
+    if db.has_feed(month + "-01", "month") or db.get_config("last_report_month") == month:
         return
 
     report = report_builder.build_monthly_report(month)
@@ -279,15 +306,13 @@ async def _maybe_feed_monthly():
         return  # 当月无有效情绪数据，不生成不注入
 
     result = await memora_client.record(
-        report, importance=5, mem_type="digest", event_date=month + "-01"
+        report, importance=5, mem_type="digest", event_date=month + "-01",
+        source_key=db.sync_key("month:" + month),
     )
     memory_id = (result or {}).get("id") if result else None
-    if result:
+    if _record_ok(result):
         db.set_config("last_report_month", month)  # 幂等：本月不再重复注入
-    db.add_feed_log(now.date().isoformat(), "month", memory_id, ok=result is not None)
-
-
-# ---- 启动 ----
+    db.add_feed_log(month + "-01", "month", memory_id, ok=_record_ok(result))
 
 
 # ---- 前端静态页 serve（同源部署：手机/电脑直接访问 8010 根路径）----
@@ -303,6 +328,7 @@ def _index():
 @app.get("/selene_browser.js", include_in_schema=False)
 def _browser_js():
     return FileResponse(_os.path.join(_SR, "selene_browser.js"))
+
 
 # ═══════════════════════════════════════════════
 #  功能C：主动提醒配置与测试（可选推送）
@@ -346,6 +372,8 @@ async def reminder_test():
     ok = await asyncio.to_thread(reminder.remind_once)
     return {"success": ok, "pushed": ok}
 
+
+# ---- 启动 ----
 
 if __name__ == "__main__":
     db.init_db()

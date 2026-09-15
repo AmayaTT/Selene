@@ -58,6 +58,7 @@ function phaseFromTable(day, table) {
   return PHASES[PHASE_KEYS.indexOf(table[String(day)])] || UNKNOWN_PHASE;
 }
 const PhaseContext = React.createContext(() => UNKNOWN_PHASE);
+const SourceContext = React.createContext({});
 
 function moodEntries(moodLog) {
   return Object.entries(moodLog).filter(([, score]) => score > 0)
@@ -158,11 +159,13 @@ function MoodLogger({ day, moodLog, onLog, logDate = localDateStr() }) {
   const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
   const logged = moodLog[logDate];
+  const origin = React.useContext(SourceContext)[logDate]?.mood;
   const [editing, setEditing] = useState(false);
   useEffect(() => setEditing(false), [logDate, logged]);
   return (
     <Card>
       <SectionLabel>{logDate === localDateStr() ? "今天心情" : `${logDate} 心情`}</SectionLabel>
+      {origin?.source === "memora" && <div style={{ fontSize: 11, color: C.textLight, marginBottom: 8 }}>来自 Memora · 自动估算，可手动修改</div>}
       {logged != null && !editing ? (
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: C.text }}>
           <span style={{ fontSize: 24 }}>{logged === -1 ? "🌫️" : MOOD_EMOJIS.find(e => e.score === logged)?.emoji}</span>
@@ -192,6 +195,7 @@ function SymptomLogger({ day, symptomLog, onToggle, logDate = localDateStr() }) 
   const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
   const selected = symptomLog[logDate] || [];
+  const origin = React.useContext(SourceContext)[logDate]?.symptoms;
   const isGood = selected.includes("状态良好");
   const [customOpen, setCustomOpen] = useState(false);
   const [customText, setCustomText] = useState("");
@@ -212,6 +216,7 @@ function SymptomLogger({ day, symptomLog, onToggle, logDate = localDateStr() }) 
   return (
     <Card>
       <SectionLabel>{logDate === localDateStr() ? "今日症状" : `${logDate} 症状`}</SectionLabel>
+      {["memora", "mixed"].includes(origin?.source) && <div style={{ fontSize: 11, color: C.textLight, marginBottom: 8 }}>包含从 Memora 同步的症状</div>}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {SYMPTOMS_LIST.map((s) => {
           const active = selected.includes(s);
@@ -684,6 +689,7 @@ function Selene() {
   const [moodLog, setMoodLog] = useState({});
   const [symptomLog, setSymptomLog] = useState({});
   const [dateInfo, setDateInfo] = useState({});
+  const [logSources, setLogSources] = useState({});
   const symptomRef = React.useRef({});
   const saveQueue = React.useRef(Promise.resolve());
   const [tab, setTab] = useState("home");
@@ -697,6 +703,8 @@ function Selene() {
   const [remindTimes, setRemindTimes] = useState("08:30");
   const [coupleMode, setCoupleMode] = useState(true);
   const [reminderMsg, setReminderMsg] = useState(null);
+  const [careCtx, setCareCtx] = useState(null);
+  const careRequest = React.useRef(0);
 
   const cycleStart = new Date(`${savedCycle.periodStart}T00:00:00`);
   const phase = getPhase(day);
@@ -716,7 +724,17 @@ function Selene() {
       const result = await apiPost("/log_mood", { day: 0, date: logDate, score });
       if (!result?.success) return saveFailed();
       setMoodLog(prev => ({ ...prev, [result.date]: result.score }));
+      setLogSources(prev => ({ ...prev, [result.date]: { ...prev[result.date], mood: { source: "manual" } } }));
       setDateInfo(prev => ({ ...prev, [result.date]: { day: result.day, phase: result.phase } }));
+      const request = ++careRequest.current;
+      if (score >= 1 && score <= 4) {
+        apiPost("/care_low_mood", { day: result.day, date: result.date, score, phase: result.phase })
+          .then(care => {
+            if (request === careRequest.current && !care?.skipped) {
+              setCareCtx(care || { memora_ok: false, related: [] });
+            }
+          });
+      }
       return true;
     });
   }
@@ -730,6 +748,7 @@ function Selene() {
       if (!result?.success) return saveFailed();
       symptomRef.current = { ...symptomRef.current, [result.date]: result.symptoms };
       setSymptomLog(symptomRef.current);
+      setLogSources(prev => ({ ...prev, [result.date]: { ...prev[result.date], symptoms: { source: "manual" } } }));
       setDateInfo(prev => ({ ...prev, [result.date]: { day: result.day, phase: result.phase } }));
       return true;
     });
@@ -742,6 +761,7 @@ function Selene() {
         if (logs.moodLog) setMoodLog(logs.moodLog);
         if (logs.symptomLog) { symptomRef.current = logs.symptomLog; setSymptomLog(logs.symptomLog); }
         if (logs.dateInfo) setDateInfo(logs.dateInfo);
+        if (logs.logSources) setLogSources(logs.logSources);
       }
       const cfg = await apiGet("/get_config");
       if (cfg) {
@@ -760,6 +780,16 @@ function Selene() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (tab !== "home") return;
+    let active = true;
+    const request = careRequest.current;
+    apiGet("/care/emotion_history?days=30").then(result => {
+      if (active && request === careRequest.current) setCareCtx(result || { memora_ok: false, related: [] });
+    });
+    return () => { active = false; };
+  }, [tab]);
 
   async function saveConfig() {
     const r = await apiPost("/save_config", { cycleLength, periodStart, periodEnd });
@@ -824,6 +854,7 @@ function Selene() {
 
   return (
     <PhaseContext.Provider value={getPhase}>
+    <SourceContext.Provider value={logSources}>
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <div style={{ paddingBottom: 80, overflowX: "hidden" }}>
 
@@ -918,6 +949,20 @@ function Selene() {
                 </div>
               </Card>
               <MoodLogger day={day} moodLog={moodLog} onLog={logMood} />
+              {careCtx && (
+                <Card>
+                  <SectionLabel>最近的心情</SectionLabel>
+                  {!careCtx.memora_ok ? (
+                    <div style={{ color: C.textLight, fontSize: 13 }}>记忆库暂时未连接，不影响在 Selene 记录心情。</div>
+                  ) : (careCtx.related || []).length === 0 ? (
+                    <div style={{ color: C.textLight, fontSize: 13 }}>暂时没有相关记忆。</div>
+                  ) : (careCtx.related || []).slice(0, 3).map((memory, index) => (
+                    <div key={index} style={{ color: C.text, fontSize: 13, lineHeight: 1.6, marginBottom: 8 }}>
+                      <span style={{ color: C.textLight }}>{memory.time_ago} </span>{memory.content}
+                    </div>
+                  ))}
+                </Card>
+              )}
               <SymptomLogger day={day} symptomLog={symptomLog} onToggle={toggleSymptom} />
               <MoodChartSmall currentDay={day} moodLog={moodLog} periodStart={savedCycle.periodStart} />
               {savedCycle.periodStart && <NextPrediction cycleStart={cycleStart} cycleLength={savedCycle.cycleLength} />}
@@ -955,6 +1000,7 @@ function Selene() {
         </div>
       )}
     </div>
+    </SourceContext.Provider>
     </PhaseContext.Provider>
   );
 }

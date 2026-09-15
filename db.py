@@ -7,6 +7,7 @@ SQLite 本地存储，一张表存经期记录，一张表存用户配置。
 import json
 import sqlite3
 import os
+import sync_storage
 from datetime import date
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "selene.db")
@@ -83,7 +84,14 @@ def init_db():
 def _ensure_columns():
     """兼容旧启动入口；迁移前备份并保留原表，可重复运行。"""
     from log_migration import migrate
-    return migrate(DB_PATH)
+    backup = migrate(DB_PATH)
+    conn = get_db()
+    try:
+        sync_storage.init_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    return backup
 
 
 # ---- 经期记录 CRUD ----
@@ -202,6 +210,7 @@ def set_mood(day: int, score: int, date: str = ""):
         "ON CONFLICT(date) DO UPDATE SET day=excluded.day, score=excluded.score",
         (day, score, date)
     )
+    sync_storage.mark_source(conn, "mood", date, "manual")
     conn.commit()
     conn.close()
 
@@ -231,6 +240,7 @@ def set_symptoms(day: int, symptoms: list, date: str = ""):
         "ON CONFLICT(date) DO UPDATE SET day=excluded.day, symptoms=excluded.symptoms",
         (day, json.dumps(symptoms, ensure_ascii=False), date)
     )
+    sync_storage.mark_source(conn, "symptoms", date, "manual")
     conn.commit()
     conn.close()
 
@@ -287,13 +297,35 @@ def add_feed_log(date: str, kind: str, memory_id, ok: bool):
 
 
 def has_feed(date: str, kind: str) -> bool:
-    """判断某天某类喂数据是否已执行过。"""
+    """只有确认成功的发送才阻止重试。"""
     conn = get_db()
     row = conn.execute(
-        "SELECT id FROM feed_log WHERE date=? AND kind=?", (date, kind)
+        "SELECT id FROM feed_log WHERE date=? AND kind=? AND ok=1", (date, kind)
     ).fetchone()
     conn.close()
     return row is not None
+
+
+def failed_feed_dates(kind):
+    conn = get_db()
+    try:
+        return [r["date"] for r in conn.execute(
+            "SELECT date FROM feed_log WHERE kind=? GROUP BY date HAVING MAX(ok)=0 ORDER BY date", (kind,))]
+    finally:
+        conn.close()
+
+
+def sync_key(key):
+    """Stable per-database identity for retry-safe remote writes."""
+    from uuid import uuid4
+    conn = get_db()
+    try:
+        conn.execute("INSERT OR IGNORE INTO config(key,value) VALUES ('selene_sync_id',?)", (uuid4().hex,))
+        identity = conn.execute("SELECT value FROM config WHERE key='selene_sync_id'").fetchone()["value"]
+        conn.commit()
+        return identity + ":" + key
+    finally:
+        conn.close()
 
 
 def get_day_log(date: str) -> dict:

@@ -11,6 +11,7 @@ Selene - memora 记忆库客户端（httpx 原生实现，对外提供 async 接
 import asyncio
 import json
 import threading
+from itertools import count
 
 import httpx
 
@@ -20,7 +21,34 @@ TIMEOUT_SECONDS = 3  # 连接/调用超时（秒）
 
 # 全局单例：_client 为 None 表示未连接或已失效
 _client = None
-_lock = threading.Lock()
+_lock = threading.RLock()
+_ids = count(1)
+
+
+def _rpc_payload(response, expected_id):
+    """Accept JSON and SSE responses, matching the response to its request."""
+    candidates = []
+    try:
+        candidates.append(response.json())
+    except (ValueError, TypeError):
+        for block in response.text.replace("\r\n", "\n").split("\n\n"):
+            data = "\n".join(line[5:].lstrip() for line in block.splitlines() if line.startswith("data:"))
+            if data:
+                try:
+                    candidates.append(json.loads(data))
+                except ValueError:
+                    continue
+    for payload in candidates:
+        if isinstance(payload, dict) and payload.get("id") == expected_id:
+            return payload
+    return None
+
+
+def _invalidate():
+    global _client
+    if _client is not None:
+        _client.close()
+        _client = None
 
 
 def _get_client():
@@ -29,6 +57,7 @@ def _get_client():
     with _lock:
         if _client is not None:
             return _client
+        c = None
         try:
             headers = {
                 "Content-Type": "application/json",
@@ -37,69 +66,82 @@ def _get_client():
             c = httpx.Client(timeout=TIMEOUT_SECONDS, headers=headers)
 
             # 1) initialize（响应头带 Mcp-Session-Id）
+            request_id = next(_ids)
             init = c.post(MEMORA_URL, json={
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "jsonrpc": "2.0", "id": request_id, "method": "initialize",
                 "params": {"protocolVersion": "2025-06-18",
                            "capabilities": {},
                            "clientInfo": {"name": "selene", "version": "1.0"}},
             })
+            init.raise_for_status()
+            initialized = _rpc_payload(init, request_id)
+            if not initialized or "result" not in initialized:
+                raise ValueError("MCP initialize failed")
             sid = init.headers.get("Mcp-Session-Id")
             if sid:
                 c.headers["Mcp-Session-Id"] = sid
 
             # 2) initialized 通知（单向）
-            c.post(MEMORA_URL, json={
+            notice = c.post(MEMORA_URL, json={
                 "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+            notice.raise_for_status()
 
             _client = c
             return c
         except Exception as e:
             print(f"[Selene] memora connect failed: {e}")
             _client = None
+            if c is not None:
+                c.close()
             return None
 
 
 def _call(tool_name: str, args: dict):
     """调用 memora 工具。成功返回解析后的 dict，任何失败返回 None。"""
-    global _client
-    try:
-        c = _get_client()
-        if c is None:
-            return None
-        r = c.post(MEMORA_URL, json={
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": tool_name, "arguments": args},
-        })
-        if r.status_code != 200:
-            return None
-        # 解析 text/event-stream 中的 data 行
-        result = None
-        for line in r.text.splitlines():
-            if line.startswith("data:"):
-                result = json.loads(line[5:].strip())
-                break
-        if result is None or "result" not in result:
-            return None
-        res = result["result"]
-        if res.get("isError"):
-            return None
-        text = "".join(cc.get("text", "") for cc in res.get("content", []))
+    with _lock:
         try:
-            return json.loads(text)
-        except (json.JSONDecodeError, TypeError):
-            return {"raw": text}
-    except Exception as e:
-        print(f"[Selene] memora call {tool_name} failed: {e}")
-        _client = None  # 连接可能已失效，重置缓存让下次调用重建
-        return None
+            for attempt in range(2):
+                c = _get_client()
+                if c is None:
+                    return None
+                request_id = next(_ids)
+                response = c.post(MEMORA_URL, json={
+                    "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": args},
+                })
+                if response.status_code != 200:
+                    _invalidate()
+                    # An expired session was rejected before executing the tool.
+                    if response.status_code == 404 and attempt == 0:
+                        continue
+                    return None
+                payload = _rpc_payload(response, request_id)
+                if not payload or "result" not in payload:
+                    _invalidate()
+                    return None
+                result = payload["result"]
+                if result.get("isError"):
+                    return None
+                parsed = result.get("structuredContent")
+                if parsed is None:
+                    parsed = json.loads("".join(item.get("text", "") for item in result.get("content", [])))
+                if not isinstance(parsed, dict) or parsed.get("success") is False:
+                    return None
+                return parsed
+        except Exception as e:
+            print(f"[Selene] memora call {tool_name} failed: {e}")
+            _invalidate()
+            return None
 
 
-def _record_sync(content: str, importance: int, mem_type: str, event_date: str) -> dict | None:
+def _record_sync(content: str, importance: int, mem_type: str, event_date: str, source_key: str) -> dict | None:
     return _call("memora_record", {
         "content": content,
         "importance": importance,
         "type": mem_type,
         "event_date": event_date,
+        "source": "selene",
+        "source_key": source_key,
     })
 
 
@@ -108,9 +150,9 @@ def _recall_sync(query: str, days: int) -> dict | None:
 
 
 async def record(content: str, importance: int = 3, mem_type: str = "fact",
-                 event_date: str = "") -> dict | None:
+                 event_date: str = "", source_key: str = "") -> dict | None:
     """记一条记忆到 memora（async）。mem_type 可选 fact/feel/digest。"""
-    return await asyncio.to_thread(_record_sync, content, importance, mem_type, event_date)
+    return await asyncio.to_thread(_record_sync, content, importance, mem_type, event_date, source_key)
 
 
 async def recall(query: str = "", days: int = 30) -> dict | None:

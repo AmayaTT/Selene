@@ -1,0 +1,127 @@
+--- a/memora_server.py
++++ b/memora_server.py
+@@ -154,6 +154,12 @@
+             created_at TEXT DEFAULT (datetime('now','localtime')),
+             updated_at TEXT DEFAULT (datetime('now','localtime'))
+         );
++        CREATE TABLE IF NOT EXISTS memory_origins (
++            memory_id INTEGER PRIMARY KEY,
++            source TEXT NOT NULL,
++            source_key TEXT,
++            UNIQUE(source, source_key)
++        );
+     """)
+     conn.commit()
+     conn.close()
+@@ -183,17 +189,42 @@
+ def add_memory(content: str, tags: str = "", mood: str = "",
+                importance: int = 3, mem_type: str = "fact", pinned: int = 0,
+                depth: str = "normal", event_date: str = "",
+-               followup: str = "") -> int:
+-    conn = get_db()
+-    cur = conn.execute(
+-        "INSERT INTO memories (content, tags, mood, importance, type, pinned, depth, event_date, followup) "
+-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-        (content, tags, mood, importance, mem_type, pinned, depth, event_date, followup)
+-    )
+-    conn.commit()
+-    row_id = cur.lastrowid
+-    conn.close()
+-    return row_id
++               followup: str = "", source: str = "", source_key: str = "") -> int:
++    conn = get_db()
++    try:
++        conn.execute("BEGIN IMMEDIATE")
++        if source_key:
++            old = conn.execute("SELECT memory_id FROM memory_origins WHERE source=? AND source_key=?",
++                               (source or "memora", source_key)).fetchone()
++            if old:
++                return old["memory_id"]
++        cur = conn.execute(
++            "INSERT INTO memories (content, tags, mood, importance, type, pinned, depth, event_date, followup) "
++            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (content, tags, mood, importance, mem_type, pinned, depth, event_date, followup)
++        )
++        row_id = cur.lastrowid
++        conn.execute("INSERT INTO memory_origins(memory_id,source,source_key) VALUES (?,?,?)",
++                     (row_id, source or "memora", source_key or None))
++        conn.commit()
++        return row_id
++    except Exception:
++        conn.rollback()
++        raise
++    finally:
++        conn.close()
++
++
++def find_origin(source, source_key):
++    if not source_key:
++        return None
++    conn = get_db()
++    try:
++        row = conn.execute("SELECT memory_id FROM memory_origins WHERE source=? AND source_key=?",
++                           (source or "memora", source_key)).fetchone()
++        return row["memory_id"] if row else None
++    finally:
++        conn.close()
+ 
+ 
+ def update_memory(mem_id: int, content: str = "", tags: str = "",
+@@ -237,6 +268,7 @@
+ 
+ def delete_memory(mem_id: int) -> bool:
+     conn = get_db()
++    conn.execute("DELETE FROM memory_origins WHERE memory_id=?", (mem_id,))
+     cur = conn.execute("DELETE FROM memories WHERE id=?", (mem_id,))
+     conn.execute("DELETE FROM relations WHERE from_id=? OR to_id=?", (mem_id, mem_id))
+     conn.commit()
+@@ -642,7 +674,7 @@
+ async def memora_record(content: str, importance: int = 3,
+                         type: str = "fact", depth: str = "normal",
+                         event_date: str = "", mood: str = "",
+-                        followup: str = "") -> str:
++                        followup: str = "", source: str = "", source_key: str = "") -> str:
+     """记一条记忆。importance 1-5，type: fact(事实)/feel(感受)/digest(消化笔记)。
+     feel 类型的记忆遗忘更慢——感情比事实更难被时间冲淡。
+     depth: normal(正常)/deep(深潜归档)。deep 的记忆不会出现在日常读取
+@@ -666,10 +698,14 @@
+             "message": f"无效的 depth: {depth}。可选: normal/deep"
+         }, ensure_ascii=False)
+ 
++    existing_id = find_origin(source, source_key)
++    if existing_id is not None:
++        return json.dumps({"success": True, "id": existing_id, "deduplicated": True})
++
+     tags = _extract_tags(content)
+     final_mood = mood if (mood and mood in VALID_MOODS) else _detect_mood(content)
+     mem_id = add_memory(content, tags, final_mood, importance, mem_type=type, depth=depth,
+-                        event_date=event_date, followup=followup)
++                        event_date=event_date, followup=followup, source=source, source_key=source_key)
+ 
+     embedding_msg = ""
+     if type != "digest":
+@@ -679,19 +715,22 @@
+             embedding_msg = "，向量已嵌入"
+ 
+     sync_msg = ""
++    _sr = {"synced": False, "reason": "not_feel"}
+     if type == "feel":
+         try:
+-            _sr = selene_gateway._auto_sync_from_feel(content, event_date)
++            _sr = selene_gateway._auto_sync_from_feel(content, event_date, memory_id=mem_id,
++                                                     source=source, mood=mood)
+             if _sr.get("synced"):
+                 sync_msg = "，Selene已记: " + _sr.get("summary", "")
+         except Exception as _e:
++            _sr = {"synced": False, "reason": "sync_failed"}
+             sync_msg = "，Selene同步失败: " + str(_e)
+     type_labels = {"fact": "📌 事实", "feel": "💭 感受", "digest": "📝 消化"}
+     depth_label = "🗄️ 已归档" if depth == "deep" else ""
+     return json.dumps({
+         "success": True, "id": mem_id, "content": content,
+         "tags": tags, "mood": final_mood, "importance": importance, "type": type, "depth": depth,
+-        "event_date": event_date, "followup": followup,
++        "event_date": event_date, "followup": followup, "source": source or "memora", "selene_sync": _sr,
+         "message": f"记住啦 ✅ #{mem_id} {type_labels.get(type, '')} {depth_label}{embedding_msg}{sync_msg}"
+     }, ensure_ascii=False)
+ 
