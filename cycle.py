@@ -94,7 +94,25 @@ def current_phase(periods: list[dict], today: date | None = None) -> dict:
     follicular_end = menstrual_end + round(PHASE_DAYS["follicular"] * ratio)
     ovulation_end = follicular_end + round(PHASE_DAYS["ovulation"] * ratio)
 
-    if cd <= menstrual_end:
+    days_left = (nxt - today).days if nxt else 0
+    end_date = periods[-1].get("end_date")
+
+    if end_date:
+        # 实际结束日期优先于按周期比例推算的经期长度。
+        start = date.fromisoformat(periods[-1]["start_date"])
+        end = date.fromisoformat(end_date)
+        if start <= today <= end:
+            phase = "menstrual"
+        elif today > end:
+            if days_left > 14:
+                phase = "follicular"
+            elif days_left >= 8:
+                phase = "ovulation"
+            else:
+                phase = "luteal"
+        else:
+            phase = "unknown"
+    elif cd <= menstrual_end:
         phase = "menstrual"
     elif cd <= follicular_end:
         phase = "follicular"
@@ -104,10 +122,6 @@ def current_phase(periods: list[dict], today: date | None = None) -> dict:
         phase = "luteal"
     else:
         phase = "unknown"
-
-    days_left = 0
-    if nxt:
-        days_left = (nxt - today).days
 
     return {
         "phase": phase,
