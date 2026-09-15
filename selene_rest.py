@@ -82,6 +82,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Selene REST API", lifespan=lifespan)
 import period_api
 period_api.register(app)
+import web_assets
+web_assets.register(app)
 
 # 允许跨域，前端任何地址都能调
 app.add_middleware(

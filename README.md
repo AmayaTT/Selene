@@ -42,9 +42,11 @@ Selene 以月神之名，循着月亮般规律的生理节律（月经期 → �
 
 ## 🚀 快速开始
 
+本次发布的验收结果、完整测试命令、部署与回退步骤见 [RELEASE.md](RELEASE.md)。
+
 ### 环境要求
 
-- Python 3.9+
+- Python 3.10+（本次在 Python 3.11 验证）
 - 无需 Node（前端是原生 JS，构建脚本可选）
 
 ### 安装与运行
@@ -68,7 +70,7 @@ python selene_rest.py
 # http://localhost:8010
 ```
 
-> 依赖里只有 FastAPI / Uvicorn / Pydantic。前端是原生 JS，不需要 Node。
+> 安装 requirements.txt 中的 REST、MCP 和 HTTP 客户端依赖。直接运行已有前端产物不需要 Node；修改 JSX 后需运行 `node transpile.js`。页面运行时还需加载 unpkg.com 上的前端依赖。
 
 > 💡 **想在外网/手机随时用？** 把 `selene_rest.py` 跑在有公网 IP 的服务器上（代码默认监听 `0.0.0.0`），或开一台常开机的电脑当服务器。数据始终存在你自己的机器上。
 

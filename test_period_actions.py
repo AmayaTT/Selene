@@ -85,11 +85,17 @@ class PeriodActionTests(unittest.TestCase):
     def test_both_rest_entry_points(self):
         for module in (selene_rest, selene_rest_deploy):
             client = TestClient(module.app)
+            self.assertEqual(client.get('/').status_code, 200)
+            script = client.get('/selene_browser.js')
+            self.assertEqual(script.status_code, 200)
+            self.assertEqual(script.headers['cache-control'], 'no-cache')
+            self.assertIn('PeriodHistory', script.text)
             response = client.post('/period/action', json={'action': 'start', 'date': '2026-08-21', 'request_id': module.__name__})
             self.assertEqual(response.status_code, 200)
             body = response.json()
             self.assertTrue(body['periodId'])
             self.assertIn('phase_label', body['status'])
+            self.assertEqual(body['periodHistory'][0]['start_date'], '2026-08-21')
             response = client.post('/period/undo', json={'request_id': module.__name__})
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()['status']['state'], 'pending')

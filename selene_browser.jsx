@@ -194,6 +194,18 @@ function PeriodActions({ config, onChange }) {
   </Card>;
 }
 
+function PeriodHistory({ records = [] }) {
+  return <Card>
+    <details>
+      <summary style={{ cursor: "pointer", color: C.text, fontSize: 14 }}>经期历史（最近 {records.length} 轮）</summary>
+      {records.length === 0 && <p style={{ color: C.textLight }}>暂无经期记录</p>}
+      {records.map(record => <div key={record.id} style={{ marginTop: 12, color: C.text, fontSize: 13 }}>
+        <span>{record.start_date}</span> 至 <span>{record.end_date || "结束日期未记录"}</span>
+      </div>)}
+    </details>
+  </Card>;
+}
+
 function MoonRing({ day, total = 28, phaseLabel }) {
   const getPhase = React.useContext(PhaseContext);
   const r = 90, cx = 120, cy = 120;
@@ -1007,6 +1019,7 @@ function Selene() {
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 16px 0" }}>
               <PeriodStatus status={savedCycle.status} />
               <PeriodActions config={savedCycle} onChange={periodChanged} />
+              <PeriodHistory records={savedCycle.periodHistory} />
               <MoodLogger day={day} moodLog={moodLog} onLog={logMood} />
               {careCtx && (
                 <Card>

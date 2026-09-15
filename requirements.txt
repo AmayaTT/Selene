@@ -1,6 +1,8 @@
 fastapi
 uvicorn
 pydantic
+httpx
+mcp
 
 # 可选：接 MySQL / PostgreSQL 时才需要
 # pymysql

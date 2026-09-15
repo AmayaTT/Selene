@@ -400,6 +400,28 @@ function PeriodActions({
     }
   }, message)));
 }
+function PeriodHistory({
+  records = []
+}) {
+  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement("details", null, /*#__PURE__*/React.createElement("summary", {
+    style: {
+      cursor: "pointer",
+      color: C.text,
+      fontSize: 14
+    }
+  }, "经期历史（最近 ", records.length, " 轮）"), records.length === 0 && /*#__PURE__*/React.createElement("p", {
+    style: {
+      color: C.textLight
+    }
+  }, "暂无经期记录"), records.map(record => /*#__PURE__*/React.createElement("div", {
+    key: record.id,
+    style: {
+      marginTop: 12,
+      color: C.text,
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("span", null, record.start_date), " 至 ", /*#__PURE__*/React.createElement("span", null, record.end_date || "结束日期未记录")))));
+}
 function MoonRing({
   day,
   total = 28,
@@ -2159,6 +2181,8 @@ function Selene() {
   }), /*#__PURE__*/React.createElement(PeriodActions, {
     config: savedCycle,
     onChange: periodChanged
+  }), /*#__PURE__*/React.createElement(PeriodHistory, {
+    records: savedCycle.periodHistory
   }), /*#__PURE__*/React.createElement(MoodLogger, {
     day: day,
     moodLog: moodLog,

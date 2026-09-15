@@ -368,6 +368,7 @@ def get_cycle_config() -> dict:
         "periodStart": start,
         "periodEnd": last.get("end_date", "") or "",
         "periodId": last.get("id"),
+        "periodHistory": [{"id": p["id"], "start_date": p["start_date"], "end_date": p["end_date"] or ""} for p in reversed(periods)],
         "status": cycle.describe_status(periods, cycle_length=length),
         "undoAction": period_actions.latest_undo(),
         "phaseByDay": {

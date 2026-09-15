@@ -82,6 +82,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Selene REST API", lifespan=lifespan)
 import period_api
 period_api.register(app)
+import web_assets
+web_assets.register(app)
 
 # 允许跨域，前端任何地址都能调
 app.add_middleware(
@@ -318,18 +320,6 @@ async def _feed_month(month):
 
 
 # ---- 前端静态页 serve（同源部署：手机/电脑直接访问 8010 根路径）----
-import os as _os
-from fastapi.responses import FileResponse
-
-_SR = _os.path.dirname(_os.path.abspath(__file__))
-
-@app.get("/", include_in_schema=False)
-def _index():
-    return FileResponse(_os.path.join(_SR, "index.html"))
-
-@app.get("/selene_browser.js", include_in_schema=False)
-def _browser_js():
-    return FileResponse(_os.path.join(_SR, "selene_browser.js"))
 
 
 # ═══════════════════════════════════════════════
