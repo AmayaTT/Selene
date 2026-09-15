@@ -54,6 +54,27 @@ async function apiPost(path, body) {
     return null;
   }
 }
+async function postPeriodAction(path, body) {
+  try {
+    const response = await fetch(API + path, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+    const result = await response.json();
+    return response.ok ? result : {
+      success: false,
+      detail: typeof result.detail === "string" ? result.detail : "日期或操作无效，请检查后重试"
+    };
+  } catch (_) {
+    return {
+      success: false,
+      detail: "未能确认保存结果，输入已保留，请重试"
+    };
+  }
+}
 function localDateStr(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -183,9 +204,206 @@ function Card({
 // 主页组件
 // ═══════════════════════════════════════════
 
+function PeriodStatus({
+  status
+}) {
+  const current = status || {
+    title: "待记录",
+    detail: "记录经期开始日期后，可查看周期预测。",
+    phase_label: "待记录"
+  };
+  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "当前记录与预测"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.text,
+      fontSize: 17,
+      fontWeight: 600
+    }
+  }, current.title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.textLight,
+      fontSize: 13,
+      lineHeight: 1.6,
+      marginTop: 8
+    }
+  }, current.detail), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.purpleDeep,
+      fontSize: 13,
+      marginTop: 8
+    }
+  }, current.phase_label));
+}
+function PeriodActions({
+  config,
+  onChange
+}) {
+  const [startDate, setStartDate] = useState(localDateStr());
+  const [endDate, setEndDate] = useState(localDateStr());
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const inFlight = React.useRef(false);
+  const pending = React.useRef(null);
+  async function submit(action) {
+    if (inFlight.current) return;
+    const value = action === "start" ? startDate : endDate;
+    if (!value || value > localDateStr()) {
+      setMessage("请选择今天或过去的实际日期");
+      return;
+    }
+    if (action === "end" && (!config.periodId || value < config.periodStart)) {
+      setMessage("请先记录开始日期；结束日期不能早于开始日期");
+      return;
+    }
+    const payload = {
+      action,
+      date: value,
+      period_id: action === "end" ? config.periodId : null
+    };
+    const signature = JSON.stringify(payload);
+    if (pending.current?.signature !== signature) {
+      pending.current = {
+        signature,
+        id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      };
+    }
+    inFlight.current = true;
+    setBusy(true);
+    setMessage("正在保存…");
+    try {
+      const result = await postPeriodAction("/period/action", {
+        ...payload,
+        request_id: pending.current.id
+      });
+      if (!result.success) {
+        setMessage(result.detail);
+        return;
+      }
+      pending.current = null;
+      await onChange(result);
+      setMessage(result.undone ? "这次操作已撤销" : result.changed ? "已保存，可撤销上次记录" : "该日期已记录，无需重复保存");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+  async function undo() {
+    if (inFlight.current || !config.undoAction) return;
+    inFlight.current = true;
+    setBusy(true);
+    setMessage("正在撤销…");
+    try {
+      const result = await postPeriodAction("/period/undo", {
+        request_id: config.undoAction.request_id
+      });
+      if (!result.success) {
+        setMessage(result.detail);
+        return;
+      }
+      await onChange(result);
+      setMessage("已撤销，恢复到操作前的记录");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+  const inputStyle = {
+    minWidth: 0,
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "9px",
+    borderRadius: 10,
+    border: "1px solid #D8D4E0",
+    background: C.bg,
+    color: C.text
+  };
+  const buttonStyle = {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "none",
+    background: C.purpleDeep,
+    color: C.white,
+    cursor: "pointer"
+  };
+  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "经期记录"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textLight,
+      marginBottom: 12
+    }
+  }, "默认今天，也可以选择过去的日期补记。"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "grid",
+      gap: 6,
+      fontSize: 13,
+      color: C.text
+    }
+  }, "实际开始日期", /*#__PURE__*/React.createElement("input", {
+    "aria-label": "实际开始日期",
+    type: "date",
+    value: startDate,
+    max: localDateStr(),
+    disabled: busy,
+    onChange: event => setStartDate(event.target.value),
+    style: inputStyle
+  })), /*#__PURE__*/React.createElement("button", {
+    disabled: busy,
+    onClick: () => submit("start"),
+    style: buttonStyle
+  }, "记录开始"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "grid",
+      gap: 6,
+      fontSize: 13,
+      color: C.text
+    }
+  }, "实际结束日期", /*#__PURE__*/React.createElement("input", {
+    "aria-label": "实际结束日期",
+    type: "date",
+    value: endDate,
+    min: config.periodStart || undefined,
+    max: localDateStr(),
+    disabled: busy || !config.periodId,
+    onChange: event => setEndDate(event.target.value),
+    style: inputStyle
+  })), /*#__PURE__*/React.createElement("button", {
+    disabled: busy || !config.periodId,
+    onClick: () => submit("end"),
+    style: {
+      ...buttonStyle,
+      background: config.periodId ? C.purpleDeep : C.textLight
+    }
+  }, "记录结束"), config.periodStart && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textLight
+    }
+  }, "结束日期记在 ", config.periodStart, " 开始的这一轮。"), config.undoAction && /*#__PURE__*/React.createElement("button", {
+    disabled: busy,
+    onClick: undo,
+    style: {
+      ...buttonStyle,
+      background: C.cardAlt,
+      color: C.text
+    }
+  }, "撤销上次记录"), message && /*#__PURE__*/React.createElement("div", {
+    role: "status",
+    "aria-live": "polite",
+    style: {
+      fontSize: 13,
+      color: C.text,
+      lineHeight: 1.6
+    }
+  }, message)));
+}
 function MoonRing({
   day,
-  total = 28
+  total = 28,
+  phaseLabel
 }) {
   const getPhase = React.useContext(PhaseContext);
   const r = 90,
@@ -270,7 +488,7 @@ function MoonRing({
     style: {
       fontFamily: "Georgia, serif"
     }
-  }, "Day ", day), /*#__PURE__*/React.createElement("text", {
+  }, day > 0 ? `Day ${day}` : "待记录"), /*#__PURE__*/React.createElement("text", {
     x: cx,
     y: cy + 38,
     textAnchor: "middle",
@@ -285,7 +503,7 @@ function MoonRing({
       color: C.text,
       fontSize: 13
     }
-  }, phase.name));
+  }, phaseLabel || (day > 0 ? `预计${phase.name}` : "待记录")));
 }
 function MoodLogger({
   day,
@@ -617,7 +835,7 @@ function NextPrediction({
       color: C.textLight,
       marginBottom: 4
     }
-  }, "下次月经"), /*#__PURE__*/React.createElement("div", {
+  }, "预计下次经期"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 15,
       fontWeight: 600,
@@ -1217,6 +1435,7 @@ function MePage({
   }, "上次月经开始"), /*#__PURE__*/React.createElement("input", {
     type: "date",
     value: periodStart,
+    max: localDateStr(),
     onChange: e => setPeriodStart(e.target.value),
     style: {
       width: "100%",
@@ -1239,6 +1458,7 @@ function MePage({
     value: periodEnd,
     onChange: e => setPeriodEnd(e.target.value),
     min: periodStart || undefined,
+    max: localDateStr(),
     style: {
       width: "100%",
       padding: "8px 12px",
@@ -1257,11 +1477,11 @@ function MePage({
       fontSize: 12,
       color: C.text
     }
-  }, "经期 ", /*#__PURE__*/React.createElement("b", {
+  }, "本次填写经期 ", /*#__PURE__*/React.createElement("b", {
     style: {
       color: C.pink
     }
-  }, periodDays, " 天"), "，已记录 ✓"), /*#__PURE__*/React.createElement("button", {
+  }, periodDays, " 天"), "，保存后生效"), /*#__PURE__*/React.createElement("button", {
     onClick: onSaveConfig,
     style: {
       width: "100%",
@@ -1672,11 +1892,7 @@ function Selene() {
       }
       const cfg = await apiGet("/get_config");
       if (cfg) {
-        setSavedCycle(cfg);
-        if (cfg.cycleLength) setCycleLength(cfg.cycleLength);
-        if (cfg.periodStart) setPeriodStart(cfg.periodStart);
-        if (cfg.periodEnd) setPeriodEnd(cfg.periodEnd);
-        setDay(cycleDayFromStart(cfg.periodStart, cfg.cycleLength));
+        applySavedCycle(cfg);
       }
       const rem = await apiGet("/reminder_config");
       if (rem) {
@@ -1701,37 +1917,26 @@ function Selene() {
       active = false;
     };
   }, [tab]);
+  function applySavedCycle(result) {
+    setSavedCycle(result);
+    setCycleLength(result.cycleLength);
+    setPeriodStart(result.periodStart || "");
+    setPeriodEnd(result.periodEnd || "");
+    setDay(cycleDayFromStart(result.periodStart, result.cycleLength));
+  }
+  async function periodChanged(result) {
+    applySavedCycle(result);
+    const logs = await apiGet("/get_logs");
+    if (logs?.dateInfo) setDateInfo(logs.dateInfo);
+  }
   async function saveConfig() {
-    const r = await apiPost("/save_config", {
+    const result = await postPeriodAction("/save_config", {
       cycleLength,
       periodStart,
       periodEnd
     });
-    if (r && r.success) {
-      setSavedCycle(r);
-      setDay(cycleDayFromStart(r.periodStart, r.cycleLength));
-    }
-    setSaveMsg(r && r.success ? "周期设置已保存 ✓" : "保存失败，请重试");
-    setTimeout(() => setSaveMsg(null), 3000);
-  }
-  async function markPeriodStart() {
-    if (!periodStart) {
-      setSaveMsg("先选择是哪一天来的");
-      setTimeout(() => setSaveMsg(null), 3000);
-      return;
-    }
-    const safeEnd = periodEnd && periodEnd < periodStart ? "" : periodEnd;
-    if (safeEnd !== periodEnd) setPeriodEnd("");
-    const r = await apiPost("/save_config", {
-      cycleLength,
-      periodStart,
-      periodEnd: safeEnd
-    });
-    if (r && r.success) {
-      setSavedCycle(r);
-      setDay(cycleDayFromStart(r.periodStart, r.cycleLength));
-    }
-    setSaveMsg(r && r.success ? `已标记 ${periodStart} 来了 ✓` : "标记失败，请重试");
+    if (result.success) await periodChanged(result);
+    setSaveMsg(result.success ? "\u5468\u671f\u8bbe\u7f6e\u5df2\u4fdd\u5b58" : result.detail);
     setTimeout(() => setSaveMsg(null), 3000);
   }
   async function saveReminder() {
@@ -1923,7 +2128,7 @@ function Selene() {
       fontSize: 12,
       color: sky.stars
     }
-  }, "第 ", day, " 天")), /*#__PURE__*/React.createElement("div", {
+  }, day > 0 ? `第 ${day} 天` : "待记录")), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "0 16px 16px",
       position: "relative"
@@ -1940,79 +2145,21 @@ function Selene() {
     }
   }, /*#__PURE__*/React.createElement(MoonRing, {
     day: day,
-    total: savedCycle.cycleLength
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "0 20px 4px",
-      display: "flex",
-      flexDirection: "column",
-      gap: 6,
-      position: "relative"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "range",
-    min: 1,
-    max: cycleLength,
-    value: Math.min(day, cycleLength),
-    onChange: e => setDay(Number(e.target.value)),
-    style: {
-      width: "100%",
-      accentColor: sky.accent,
-      cursor: "pointer"
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      fontSize: 10,
-      color: sky.stars + "88"
-    }
-  }, /*#__PURE__*/React.createElement("span", null, "Day 1"), /*#__PURE__*/React.createElement("span", null, "Day ", cycleLength)))), /*#__PURE__*/React.createElement("div", {
+    total: savedCycle.cycleLength,
+    phaseLabel: savedCycle.status?.phase_label
+  }))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
       gap: 12,
       padding: "16px 16px 0"
     }
-  }, /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "经期标记"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: C.textLight,
-      marginBottom: 10
-    }
-  }, "在哪一天来了？选日期后标记，周期会从这一天重新计算。"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: periodStart,
-    max: localDateStr(),
-    onChange: e => setPeriodStart(e.target.value),
-    style: {
-      flex: 1,
-      minWidth: 0,
-      padding: "8px 10px",
-      borderRadius: 12,
-      border: "1px solid #D8D4E0",
-      background: C.bg,
-      color: C.text,
-      fontSize: 13
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: markPeriodStart,
-    style: {
-      padding: "8px 13px",
-      borderRadius: 12,
-      border: "none",
-      background: C.purpleDeep,
-      color: C.white,
-      fontSize: 12,
-      fontWeight: 600,
-      cursor: "pointer"
-    }
-  }, "标记来了"))), /*#__PURE__*/React.createElement(MoodLogger, {
+  }, /*#__PURE__*/React.createElement(PeriodStatus, {
+    status: savedCycle.status
+  }), /*#__PURE__*/React.createElement(PeriodActions, {
+    config: savedCycle,
+    onChange: periodChanged
+  }), /*#__PURE__*/React.createElement(MoodLogger, {
     day: day,
     moodLog: moodLog,
     onLog: logMood

@@ -130,3 +130,31 @@ def current_phase(periods: list[dict], today: date | None = None, cycle_length: 
         "next_date": nxt.isoformat() if nxt else "未知",
         "cycle_length": cycle,
     }
+
+
+def describe_status(periods, today=None, cycle_length=None):
+    """Presentation metadata: recorded dates are distinct from estimated phases."""
+    today = today or date.today()
+    state = current_phase(periods, today, cycle_length)
+    last = periods[-1] if periods else {}
+    start, end = last.get("start_date", ""), last.get("end_date", "") or ""
+    names = {"menstrual": "经期", "follicular": "卵泡期", "ovulation": "排卵期", "luteal": "黄体期"}
+    actual = bool(start and end and start <= today.isoformat() <= end)
+    label = "经期中（已记录）" if actual else ("预计" + names[state["phase"]] if state["phase"] in names else "阶段待确认")
+    result = {"as_of": today.isoformat(), "phase_label": label, "phase_is_estimated": not actual,
+              "start_date": start, "end_date": end, "next_date": state["next_date"],
+              "days_left": state["days_left"], "overdue_days": 0}
+    if not start or start > today.isoformat():
+        result.update(state="pending", title="待记录", detail="记录经期开始日期后，可查看周期预测。", phase_label="待记录")
+    elif actual:
+        result.update(state="menstrual", title="经期中", detail=f"已记录：{start} 至 {end}")
+    elif state["next_date"] != "未知" and state["next_date"] <= today.isoformat():
+        overdue = (today - date.fromisoformat(state["next_date"])).days
+        result.update(state="overdue" if overdue else "due", overdue_days=overdue,
+                      title=f"超过预计日期 {overdue} 天" if overdue else "已到预计日期",
+                      detail="请确认本轮是否已经开始；开始后记一下日期。")
+    elif end:
+        result.update(state="ended", title="已记录结束日期", detail=f"这轮经期：{start} 至 {end}")
+    else:
+        result.update(state="started", title="已记录开始日期", detail=f"{start} 开始；结束后记一下结束日期。")
+    return result

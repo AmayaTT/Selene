@@ -96,6 +96,7 @@ async def selene_status(couple_mode: bool = True) -> str:
 
     result = {
         "phase": phase, "phase_cn": _phase_cn(phase),
+        "status": cycle.describe_status(periods, cycle_length=now["cycle_length"]),
         "day": now["day"], "days_left": now["days_left"],
         "next_date": now["next_date"], "cycle_length": now["cycle_length"],
         "periods_recorded": len(periods),

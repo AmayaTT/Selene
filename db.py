@@ -88,6 +88,8 @@ def _ensure_columns():
     conn = get_db()
     try:
         sync_storage.init_schema(conn)
+        import period_actions
+        period_actions.init_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -355,6 +357,7 @@ def get_day_log(date: str) -> dict:
 
 def get_cycle_config() -> dict:
     import cycle
+    import period_actions
     periods = get_periods()
     last = periods[-1] if periods else {}
     length = int(get_config("cycle_length", str(cycle.avg_cycle(periods))))
@@ -364,6 +367,9 @@ def get_cycle_config() -> dict:
         "cycleLength": length,
         "periodStart": start,
         "periodEnd": last.get("end_date", "") or "",
+        "periodId": last.get("id"),
+        "status": cycle.describe_status(periods, cycle_length=length),
+        "undoAction": period_actions.latest_undo(),
         "phaseByDay": {
             str(day): cycle.current_phase(periods, date.fromisoformat(start) + timedelta(days=day-1), length)["phase"]
             for day in range(1, 61)

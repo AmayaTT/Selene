@@ -26,6 +26,16 @@ async function apiPost(path, body) {
   } catch (e) { console.warn("apiPost failed", e); return null; }
 }
 
+async function postPeriodAction(path, body) {
+  try {
+    const response = await fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const result = await response.json();
+    return response.ok ? result : { success: false, detail: typeof result.detail === "string" ? result.detail : "日期或操作无效，请检查后重试" };
+  } catch (_) {
+    return { success: false, detail: "未能确认保存结果，输入已保留，请重试" };
+  }
+}
+
 function localDateStr(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -117,7 +127,74 @@ function Card({ children, style }) {
 // 主页组件
 // ═══════════════════════════════════════════
 
-function MoonRing({ day, total = 28 }) {
+function PeriodStatus({ status }) {
+  const current = status || { title: "待记录", detail: "记录经期开始日期后，可查看周期预测。", phase_label: "待记录" };
+  return <Card>
+    <SectionLabel>当前记录与预测</SectionLabel>
+    <div style={{ color: C.text, fontSize: 17, fontWeight: 600 }}>{current.title}</div>
+    <div style={{ color: C.textLight, fontSize: 13, lineHeight: 1.6, marginTop: 8 }}>{current.detail}</div>
+    <div style={{ color: C.purpleDeep, fontSize: 13, marginTop: 8 }}>{current.phase_label}</div>
+  </Card>;
+}
+
+function PeriodActions({ config, onChange }) {
+  const [startDate, setStartDate] = useState(localDateStr());
+  const [endDate, setEndDate] = useState(localDateStr());
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const inFlight = React.useRef(false);
+  const pending = React.useRef(null);
+  async function submit(action) {
+    if (inFlight.current) return;
+    const value = action === "start" ? startDate : endDate;
+    if (!value || value > localDateStr()) { setMessage("请选择今天或过去的实际日期"); return; }
+    if (action === "end" && (!config.periodId || value < config.periodStart)) { setMessage("请先记录开始日期；结束日期不能早于开始日期"); return; }
+    const payload = { action, date: value, period_id: action === "end" ? config.periodId : null };
+    const signature = JSON.stringify(payload);
+    if (pending.current?.signature !== signature) {
+      pending.current = { signature, id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}` };
+    }
+    inFlight.current = true; setBusy(true); setMessage("正在保存…");
+    try {
+      const result = await postPeriodAction("/period/action", { ...payload, request_id: pending.current.id });
+      if (!result.success) { setMessage(result.detail); return; }
+      pending.current = null;
+      await onChange(result);
+      setMessage(result.undone ? "这次操作已撤销" : result.changed ? "已保存，可撤销上次记录" : "该日期已记录，无需重复保存");
+    } finally { inFlight.current = false; setBusy(false); }
+  }
+  async function undo() {
+    if (inFlight.current || !config.undoAction) return;
+    inFlight.current = true; setBusy(true); setMessage("正在撤销…");
+    try {
+      const result = await postPeriodAction("/period/undo", { request_id: config.undoAction.request_id });
+      if (!result.success) { setMessage(result.detail); return; }
+      await onChange(result);
+      setMessage("已撤销，恢复到操作前的记录");
+    } finally { inFlight.current = false; setBusy(false); }
+  }
+  const inputStyle = { minWidth: 0, width: "100%", boxSizing: "border-box", padding: "9px", borderRadius: 10, border: "1px solid #D8D4E0", background: C.bg, color: C.text };
+  const buttonStyle = { padding: "10px 12px", borderRadius: 10, border: "none", background: C.purpleDeep, color: C.white, cursor: "pointer" };
+  return <Card>
+    <SectionLabel>经期记录</SectionLabel>
+    <div style={{ fontSize: 12, color: C.textLight, marginBottom: 12 }}>默认今天，也可以选择过去的日期补记。</div>
+    <div style={{ display: "grid", gap: 12 }}>
+      <label style={{ display: "grid", gap: 6, fontSize: 13, color: C.text }}>实际开始日期
+        <input aria-label="实际开始日期" type="date" value={startDate} max={localDateStr()} disabled={busy} onChange={event => setStartDate(event.target.value)} style={inputStyle} />
+      </label>
+      <button disabled={busy} onClick={() => submit("start")} style={buttonStyle}>记录开始</button>
+      <label style={{ display: "grid", gap: 6, fontSize: 13, color: C.text }}>实际结束日期
+        <input aria-label="实际结束日期" type="date" value={endDate} min={config.periodStart || undefined} max={localDateStr()} disabled={busy || !config.periodId} onChange={event => setEndDate(event.target.value)} style={inputStyle} />
+      </label>
+      <button disabled={busy || !config.periodId} onClick={() => submit("end")} style={{ ...buttonStyle, background: config.periodId ? C.purpleDeep : C.textLight }}>记录结束</button>
+      {config.periodStart && <div style={{ fontSize: 12, color: C.textLight }}>结束日期记在 {config.periodStart} 开始的这一轮。</div>}
+      {config.undoAction && <button disabled={busy} onClick={undo} style={{ ...buttonStyle, background: C.cardAlt, color: C.text }}>撤销上次记录</button>}
+      {message && <div role="status" aria-live="polite" style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>{message}</div>}
+    </div>
+  </Card>;
+}
+
+function MoonRing({ day, total = 28, phaseLabel }) {
   const getPhase = React.useContext(PhaseContext);
   const r = 90, cx = 120, cy = 120;
   const circumference = 2 * Math.PI * r;
@@ -145,11 +222,11 @@ function MoonRing({ day, total = 28 }) {
         <circle cx={cx} cy={cy} r={52} fill={C.white} />
         <circle cx={cx} cy={cy} r={48} fill="#F0EBF5" />
         <text x={cx} y={cy - 8} textAnchor="middle" fontSize={28} dominantBaseline="middle">{phase.emoji}</text>
-        <text x={cx} y={cy + 20} textAnchor="middle" fontSize={22} fontWeight="600" fill={C.text} style={{ fontFamily: "Georgia, serif" }}>Day {day}</text>
+        <text x={cx} y={cy + 20} textAnchor="middle" fontSize={22} fontWeight="600" fill={C.text} style={{ fontFamily: "Georgia, serif" }}>{day > 0 ? `Day ${day}` : "待记录"}</text>
         <text x={cx} y={cy + 38} textAnchor="middle" fontSize={11} fill={C.textLight}>/ {total}</text>
       </svg>
       <div style={{ background: phase.color + "33", border: `1px solid ${phase.color}`, borderRadius: 20, padding: "5px 18px", color: C.text, fontSize: 13 }}>
-        {phase.name}
+        {phaseLabel || (day > 0 ? `预计${phase.name}` : "待记录")}
       </div>
     </div>
   );
@@ -283,7 +360,7 @@ function NextPrediction({ cycleStart, cycleLength }) {
       <SectionLabel>周期预测</SectionLabel>
       <div style={{ display: "flex", gap: 10 }}>
         <div style={{ flex: 1, background: C.pink + "33", borderRadius: 14, padding: "12px 14px" }}>
-          <div style={{ fontSize: 10, color: C.textLight, marginBottom: 4 }}>下次月经</div>
+          <div style={{ fontSize: 10, color: C.textLight, marginBottom: 4 }}>预计下次经期</div>
           <div style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{fmt(next)}</div>
           <div style={{ fontSize: 11, color: C.pink, marginTop: 2 }}>{diff > 0 ? `还有 ${diff} 天` : diff === 0 ? "就是今天" : `已过 ${Math.abs(diff)} 天`}</div>
         </div>
@@ -552,18 +629,18 @@ function MePage({ cycleLength, setCycleLength, periodStart, setPeriodStart, peri
         <div style={{ borderTop: "1px solid #E2DDE8", paddingTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
             <div style={{ fontSize: 13, color: C.text, marginBottom: 8 }}>上次月经开始</div>
-            <input type="date" value={periodStart} onChange={e => setPeriodStart(e.target.value)}
+            <input type="date" value={periodStart} max={localDateStr()} onChange={e => setPeriodStart(e.target.value)}
               style={{ width: "100%", padding: "8px 12px", borderRadius: 12, border: "1px solid #D8D4E0", background: C.bg, color: C.text, fontSize: 13, boxSizing: "border-box" }} />
           </div>
           <div>
             <div style={{ fontSize: 13, color: C.text, marginBottom: 8 }}>上次月经结束</div>
             <input type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)}
-              min={periodStart || undefined}
+              min={periodStart || undefined} max={localDateStr()}
               style={{ width: "100%", padding: "8px 12px", borderRadius: 12, border: "1px solid #D8D4E0", background: C.bg, color: C.text, fontSize: 13, boxSizing: "border-box" }} />
           </div>
           {periodDays && (
             <div style={{ background: C.pink + "33", borderRadius: 12, padding: "8px 14px", fontSize: 12, color: C.text }}>
-              经期 <b style={{ color: C.pink }}>{periodDays} 天</b>，已记录 ✓
+              本次填写经期 <b style={{ color: C.pink }}>{periodDays} 天</b>，保存后生效
             </div>
           )}
           <button onClick={onSaveConfig}
@@ -765,11 +842,7 @@ function Selene() {
       }
       const cfg = await apiGet("/get_config");
       if (cfg) {
-        setSavedCycle(cfg);
-        if (cfg.cycleLength) setCycleLength(cfg.cycleLength);
-        if (cfg.periodStart) setPeriodStart(cfg.periodStart);
-        if (cfg.periodEnd) setPeriodEnd(cfg.periodEnd);
-        setDay(cycleDayFromStart(cfg.periodStart, cfg.cycleLength));
+        applySavedCycle(cfg);
       }
       const rem = await apiGet("/reminder_config");
       if (rem) {
@@ -791,24 +864,24 @@ function Selene() {
     return () => { active = false; };
   }, [tab]);
 
-  async function saveConfig() {
-    const r = await apiPost("/save_config", { cycleLength, periodStart, periodEnd });
-    if (r && r.success) { setSavedCycle(r); setDay(cycleDayFromStart(r.periodStart, r.cycleLength)); }
-    setSaveMsg(r && r.success ? "周期设置已保存 ✓" : "保存失败，请重试");
-    setTimeout(() => setSaveMsg(null), 3000);
+  function applySavedCycle(result) {
+    setSavedCycle(result);
+    setCycleLength(result.cycleLength);
+    setPeriodStart(result.periodStart || "");
+    setPeriodEnd(result.periodEnd || "");
+    setDay(cycleDayFromStart(result.periodStart, result.cycleLength));
   }
 
-  async function markPeriodStart() {
-    if (!periodStart) {
-      setSaveMsg("先选择是哪一天来的");
-      setTimeout(() => setSaveMsg(null), 3000);
-      return;
-    }
-    const safeEnd = periodEnd && periodEnd < periodStart ? "" : periodEnd;
-    if (safeEnd !== periodEnd) setPeriodEnd("");
-    const r = await apiPost("/save_config", { cycleLength, periodStart, periodEnd: safeEnd });
-    if (r && r.success) { setSavedCycle(r); setDay(cycleDayFromStart(r.periodStart, r.cycleLength)); }
-    setSaveMsg(r && r.success ? `已标记 ${periodStart} 来了 ✓` : "标记失败，请重试");
+  async function periodChanged(result) {
+    applySavedCycle(result);
+    const logs = await apiGet("/get_logs");
+    if (logs?.dateInfo) setDateInfo(logs.dateInfo);
+  }
+
+  async function saveConfig() {
+    const result = await postPeriodAction("/save_config", { cycleLength, periodStart, periodEnd });
+    if (result.success) await periodChanged(result);
+    setSaveMsg(result.success ? "\u5468\u671f\u8bbe\u7f6e\u5df2\u4fdd\u5b58" : result.detail);
     setTimeout(() => setSaveMsg(null), 3000);
   }
 
@@ -914,7 +987,7 @@ function Selene() {
                   <div style={{ fontSize: 22, fontWeight: 700, color: "#F5F0FA", fontFamily: "Georgia, serif", letterSpacing: "-0.01em" }}>Selene</div>
                   <div style={{ fontSize: 11, color: sky.stars + "99", marginTop: 2 }}>与你同步的月亮</div>
                 </div>
-                <div style={{ background: "rgba(255,255,255,0.12)", borderRadius: 12, padding: "6px 13px", fontSize: 12, color: sky.stars }}>第 {day} 天</div>
+                <div style={{ background: "rgba(255,255,255,0.12)", borderRadius: 12, padding: "6px 13px", fontSize: 12, color: sky.stars }}>{day > 0 ? `第 ${day} 天` : "待记录"}</div>
               </div>
 
               {/* 阶段条 */}
@@ -924,30 +997,16 @@ function Selene() {
 
               {/* 月相环 */}
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "0 32px 14px", position: "relative" }}>
-                <MoonRing day={day} total={savedCycle.cycleLength} />
+                <MoonRing day={day} total={savedCycle.cycleLength} phaseLabel={savedCycle.status?.phase_label} />
               </div>
 
-              {/* 滑条 */}
-              <div style={{ padding: "0 20px 4px", display: "flex", flexDirection: "column", gap: 6, position: "relative" }}>
-                <input type="range" min={1} max={cycleLength} value={Math.min(day, cycleLength)} onChange={(e) => setDay(Number(e.target.value))}
-                  style={{ width: "100%", accentColor: sky.accent, cursor: "pointer" }} />
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: sky.stars + "88" }}>
-                  <span>Day 1</span><span>Day {cycleLength}</span>
-                </div>
-              </div>
+
             </div>
 
             {/* 内容卡片区 */}
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 16px 0" }}>
-              <Card>
-                <SectionLabel>经期标记</SectionLabel>
-                <div style={{ fontSize: 12, color: C.textLight, marginBottom: 10 }}>在哪一天来了？选日期后标记，周期会从这一天重新计算。</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input type="date" value={periodStart} max={localDateStr()} onChange={(e) => setPeriodStart(e.target.value)}
-                    style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: 12, border: "1px solid #D8D4E0", background: C.bg, color: C.text, fontSize: 13 }} />
-                  <button onClick={markPeriodStart} style={{ padding: "8px 13px", borderRadius: 12, border: "none", background: C.purpleDeep, color: C.white, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>标记来了</button>
-                </div>
-              </Card>
+              <PeriodStatus status={savedCycle.status} />
+              <PeriodActions config={savedCycle} onChange={periodChanged} />
               <MoodLogger day={day} moodLog={moodLog} onLog={logMood} />
               {careCtx && (
                 <Card>
