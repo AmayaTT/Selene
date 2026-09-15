@@ -52,6 +52,28 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(client._call("memora_record", {})["id"], 4)
         self.assertIsNone(client._call("memora_record", {}))
 
+    def test_structured_content_string_wrapping_is_unwrapped(self):
+        """线上 FastMCP 对 return json.dumps(...) 的工具，给的是
+        structuredContent={"result": "<json字符串>"}。不拆这一层就读不到 success/id，
+        表现为写入其实成功、但 feed_log 全记 ok=0 并每分钟重试。"""
+        def handler(request):
+            inner = json.dumps({"success": True, "id": 9})
+            body = {"jsonrpc": "2.0", "id": json.loads(request.content)["id"],
+                    "result": {"structuredContent": {"result": inner},
+                               "content": [{"type": "text", "text": inner}]}}
+            return httpx.Response(200, json=body)
+        client._client = httpx.Client(transport=httpx.MockTransport(handler))
+        self.assertEqual(client._call("memora_record", {})["id"], 9)
+
+    def test_structured_content_plain_dict_passes_through(self):
+        """structuredContent 本身已是扁平 dict 时不能被误拆。"""
+        def handler(request):
+            body = {"jsonrpc": "2.0", "id": json.loads(request.content)["id"],
+                    "result": {"structuredContent": {"success": True, "id": 11}}}
+            return httpx.Response(200, json=body)
+        client._client = httpx.Client(transport=httpx.MockTransport(handler))
+        self.assertEqual(client._call("memora_record", {})["id"], 11)
+
     def test_timeout_is_not_replayed_in_same_call(self):
         requests = []
         def handler(request):

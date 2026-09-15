@@ -125,6 +125,15 @@ def _call(tool_name: str, args: dict):
                 parsed = result.get("structuredContent")
                 if parsed is None:
                     parsed = json.loads("".join(item.get("text", "") for item in result.get("content", [])))
+                # ★ FastMCP 把「返回字符串」的工具结果包成 {"result": "<json字符串>"}。
+                # memora 的工具全都 return json.dumps(...)，所以要再拆一层才能拿到 success/id。
+                if isinstance(parsed, dict) and set(parsed) == {"result"} and isinstance(parsed["result"], str):
+                    try:
+                        inner = json.loads(parsed["result"])
+                    except ValueError:
+                        inner = None
+                    if isinstance(inner, dict):
+                        parsed = inner
                 if not isinstance(parsed, dict) or parsed.get("success") is False:
                     return None
                 return parsed
