@@ -109,7 +109,8 @@ def get_periods(limit: int = 12) -> list[dict]:
     """获取最近的经期记录，按开始日期升序。"""
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM periods ORDER BY start_date ASC LIMIT ?",
+        "SELECT * FROM (SELECT * FROM periods ORDER BY start_date DESC, id DESC LIMIT ?) "
+        "ORDER BY start_date ASC, id ASC",
         (limit,)
     ).fetchall()
     conn.close()
@@ -294,14 +295,59 @@ def get_day_log(date: str) -> dict:
 # ---- 周期设置（前端 MePage 用的配置） ----
 
 def get_cycle_config() -> dict:
+    import cycle
+    periods = get_periods()
+    last = periods[-1] if periods else {}
+    length = int(get_config("cycle_length", str(cycle.avg_cycle(periods))))
+    start = last.get("start_date", "")
+    from datetime import timedelta
     return {
-        "cycleLength": int(get_config("cycle_length", "28")),
-        "periodStart": get_config("period_start", ""),
-        "periodEnd": get_config("period_end", ""),
+        "cycleLength": length,
+        "periodStart": start,
+        "periodEnd": last.get("end_date", "") or "",
+        "phaseByDay": {
+            str(day): cycle.current_phase(periods, date.fromisoformat(start) + timedelta(days=day-1), length)["phase"]
+            for day in range(1, 61)
+        } if start else {},
     }
 
 
 def set_cycle_config(cycleLength: int, periodStart: str, periodEnd: str):
-    set_config("cycle_length", str(cycleLength))
-    set_config("period_start", periodStart)
-    set_config("period_end", periodEnd)
+    if not 18 <= cycleLength <= 60:
+        raise ValueError("周期长度必须在 18 至 60 天之间")
+    if periodStart:
+        date.fromisoformat(periodStart)
+    if periodEnd:
+        date.fromisoformat(periodEnd)
+        if not periodStart or periodEnd < periodStart:
+            raise ValueError("结束日期不能早于开始日期")
+    conn = get_db()
+    try:
+        with conn:
+            conn.executemany("INSERT OR REPLACE INTO config (key,value) VALUES (?,?)", [
+                ("cycle_length", str(cycleLength)), ("period_start", periodStart), ("period_end", periodEnd)])
+            if periodStart:
+                row = conn.execute("SELECT id FROM periods WHERE start_date=? ORDER BY id DESC LIMIT 1", (periodStart,)).fetchone()
+                if row:
+                    conn.execute("UPDATE periods SET end_date=? WHERE id=?", (periodEnd, row["id"]))
+                else:
+                    conn.execute("INSERT INTO periods (start_date,end_date) VALUES (?,?)", (periodStart, periodEnd))
+    finally:
+        conn.close()
+
+
+def current_cycle_status(today=None):
+    import cycle
+    configured = get_config("cycle_length")
+    return cycle.current_phase(get_periods(), today, int(configured) if configured else None)
+
+
+def migrate_cycle_config():
+    """一次性导入旧网页设置；不覆盖已有的同日或更新经期记录。"""
+    if get_config("period_config_migrated") == "1":
+        return
+    start = get_config("period_start")
+    last = get_last_period()
+    if start and (not last or start > last["start_date"]):
+        set_cycle_config(int(get_config("cycle_length", "28")), start, get_config("period_end"))
+    set_config("period_config_migrated", "1")

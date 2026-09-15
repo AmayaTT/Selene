@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -143,8 +143,11 @@ def get_config():
 @app.post("/save_config")
 def save_config(body: ConfigBody):
     """保存周期设置。"""
-    db.set_cycle_config(body.cycleLength, body.periodStart, body.periodEnd)
-    return {"success": True}
+    try:
+        db.set_cycle_config(body.cycleLength, body.periodStart, body.periodEnd)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"success": True, **db.get_cycle_config()}
 
 
 # ═══════════════════════════════════════════════
@@ -331,6 +334,7 @@ async def reminder_test():
 
 if __name__ == "__main__":
     db.init_db()
+    db.migrate_cycle_config()
     db._ensure_columns()  # 迁移：mood_log / symptom_log 补 date 列
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8010
     print(f"[Selene REST] starting... http://0.0.0.0:{port}")

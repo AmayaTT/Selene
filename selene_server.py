@@ -65,7 +65,7 @@ async def selene_record(
         flow=flow, pain=pain, mood=mood, body_note=body_note, note=note,
     )
     periods = db.get_periods()
-    now = cycle.current_phase(periods)
+    now = db.current_cycle_status()
 
     msg = f"已记录 ✅ 今天是周期第{now['day']}天，{_phase_cn(now['phase'])}。"
     if len(periods) >= 2:
@@ -91,7 +91,7 @@ async def selene_status(couple_mode: bool = True) -> str:
     
     couple_mode: true=伴侣语气，false=中性。"""
     periods = db.get_periods()
-    now = cycle.current_phase(periods)
+    now = db.current_cycle_status()
     phase = now["phase"]
 
     result = {
@@ -110,6 +110,8 @@ async def selene_status(couple_mode: bool = True) -> str:
             reminder = prompts.get_reminder("due_check", couple_mode)
         else:
             reminder = ""
+    elif phase != "menstrual" and now["days_left"] <= 0:
+        reminder = prompts.get_reminder("due_check", couple_mode)
     elif now["days_left"] <= 3 and phase != "menstrual":
         reminder = prompts.get_reminder("pre_menstrual", couple_mode, days_left=now["days_left"])
         signs = db.get_config("pre_menstrual_signs")
@@ -292,6 +294,7 @@ async def selene_care_context(days: int = 30) -> str:
 
 def main():
     db.init_db()
+    db.migrate_cycle_config()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8003
     print(f"🌙 Selene 启动中... http://0.0.0.0:{port}")
     app = selene.streamable_http_app()

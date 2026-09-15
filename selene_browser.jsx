@@ -22,7 +22,7 @@ async function apiPost(path, body) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return await r.json();
+    return r.ok ? await r.json() : null;
   } catch (e) { console.warn("apiPost failed", e); return null; }
 }
 
@@ -31,14 +31,14 @@ function localDateStr(date = new Date()) {
 }
 
 function cycleDayFromStart(periodStart, cycleLength = 28) {
-  if (!periodStart) return 1;
+  if (!periodStart) return 0;
   const start = new Date(`${periodStart}T00:00:00`);
-  if (Number.isNaN(start.getTime())) return 1;
+  if (Number.isNaN(start.getTime())) return 0;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const diff = Math.floor((today - start) / 86400000);
-  if (diff < 0) return 1;
-  return (diff % Math.max(21, Number(cycleLength) || 28)) + 1;
+  if (diff < 0) return 0;
+  return diff + 1;
 }
 
 const PHASES = [
@@ -51,6 +51,13 @@ const PHASES = [
 function getPhase(day) {
   return PHASES.find((p) => day >= p.days[0] && day <= p.days[1]) || PHASES[3];
 }
+
+const UNKNOWN_PHASE = { name: "未知", color: C.purple, emoji: "🌙" };
+const PHASE_KEYS = ["menstrual", "follicular", "ovulation", "luteal"];
+function phaseFromTable(day, table) {
+  return PHASES[PHASE_KEYS.indexOf(table[String(day)])] || UNKNOWN_PHASE;
+}
+const PhaseContext = React.createContext(() => UNKNOWN_PHASE);
 
 const SYMPTOMS_LIST = ["头疼", "偏头痛", "头晕", "腰酸", "腿酸", "水肿", "乳房胀痛", "小腹坠痛", "痛经", "腹痛", "腹胀", "恶心", "腹泻", "便秘", "食欲旺盛", "食欲不振", "疲惫", "乏力", "失眠", "嗜睡", "长痘", "畏寒", "情绪波动", "易怒", "焦虑", "心情低落", "状态良好"];
 
@@ -109,15 +116,16 @@ function Card({ children, style }) {
 // ═══════════════════════════════════════════
 
 function MoonRing({ day, total = 28 }) {
+  const getPhase = React.useContext(PhaseContext);
   const r = 90, cx = 120, cy = 120;
   const circumference = 2 * Math.PI * r;
-  const dash = circumference * (day / total);
+  const dash = circumference * Math.min(1, Math.max(0, day / total));
   const phase = getPhase(day);
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, width: "100%" }}>
       <svg width="100%" viewBox="0 0 240 240" style={{ maxWidth: 260 }}>
-        {Array.from({ length: 28 }, (_, i) => {
-          const angle = ((i / 28) * 360 - 90) * (Math.PI / 180);
+        {Array.from({ length: total }, (_, i) => {
+          const angle = ((i / total) * 360 - 90) * (Math.PI / 180);
           const inner = 105, outer = i % 7 === 0 ? 112 : 108;
           return (
             <line key={i}
@@ -146,6 +154,7 @@ function MoonRing({ day, total = 28 }) {
 }
 
 function MoodLogger({ day, moodLog, onLog }) {
+  const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
   const logged = moodLog[day];
   return (
@@ -177,6 +186,7 @@ function MoodLogger({ day, moodLog, onLog }) {
 }
 
 function SymptomLogger({ day, symptomLog, onToggle }) {
+  const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
   const selected = symptomLog[day] || [];
   const isGood = selected.includes("状态良好");
@@ -230,6 +240,7 @@ function SymptomLogger({ day, symptomLog, onToggle }) {
 }
 
 function MoodChartSmall({ currentDay, moodLog }) {
+  const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(currentDay);
   const data = baseMood.slice(0, currentDay).map(d => ({ ...d, mood: moodLog[d.day] > 0 ? moodLog[d.day] : d.mood }));
   return (
@@ -253,11 +264,11 @@ function MoodChartSmall({ currentDay, moodLog }) {
   );
 }
 
-function NextPrediction({ cycleStart }) {
-  const next = new Date(cycleStart); next.setDate(next.getDate() + 28);
+function NextPrediction({ cycleStart, cycleLength }) {
+  const next = new Date(cycleStart); next.setDate(next.getDate() + cycleLength);
   const today = new Date();
   const diff = Math.round((next - today) / (1000 * 60 * 60 * 24));
-  const ovulation = new Date(cycleStart); ovulation.setDate(ovulation.getDate() + 13);
+  const ovulation = new Date(cycleStart); ovulation.setDate(ovulation.getDate() + cycleLength - 14);
   const fmt = (d) => `${d.getMonth() + 1}月${d.getDate()}日`;
   return (
     <div style={{ background: C.cardAlt, borderRadius: 20, padding: "16px 18px" }}>
@@ -271,7 +282,7 @@ function NextPrediction({ cycleStart }) {
         <div style={{ flex: 1, background: C.blue + "33", borderRadius: 14, padding: "12px 14px" }}>
           <div style={{ fontSize: 10, color: C.textLight, marginBottom: 4 }}>预计排卵</div>
           <div style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{fmt(ovulation)}</div>
-          <div style={{ fontSize: 11, color: C.blue, marginTop: 2 }}>本周期 Day 14</div>
+          <div style={{ fontSize: 11, color: C.blue, marginTop: 2 }}>预计下次经期前 14 天</div>
         </div>
       </div>
     </div>
@@ -286,8 +297,9 @@ const SUGGESTIONS = {
 };
 
 function TodayCard({ day }) {
+  const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
-  const tips = SUGGESTIONS[phase.name];
+  const tips = SUGGESTIONS[phase.name] || ["请先记录经期日期。"];
   return (
     <div style={{ background: phase.color + "22", border: `1px solid ${phase.color}55`, borderRadius: 20, padding: "16px 18px" }}>
       <SectionLabel>今日</SectionLabel>
@@ -301,12 +313,13 @@ function TodayCard({ day }) {
 }
 
 function PhaseBar({ currentDay }) {
+  const getPhase = React.useContext(PhaseContext);
   return (
     <div>
       <div style={{ display: "flex", gap: 4 }}>
         {PHASES.map((p) => {
           const len = p.days[1] - p.days[0] + 1;
-          const active = currentDay >= p.days[0] && currentDay <= p.days[1];
+          const active = getPhase(currentDay).name === p.name;
           return <div key={p.name} style={{ flex: len, height: 4, borderRadius: 2, background: active ? p.color : p.color + "44", transition: "background 0.3s" }} />;
         })}
       </div>
@@ -321,7 +334,8 @@ function PhaseBar({ currentDay }) {
 // 记录页 — 月历
 // ═══════════════════════════════════════════
 
-function LogPage({ currentDay, moodLog, symptomLog, onDaySelect }) {
+function LogPage({ currentDay, moodLog, symptomLog, onDaySelect, periodStart }) {
+  const getPhase = React.useContext(PhaseContext);
   const [selected, setSelected] = useState(null);
   const today = new Date();
   const year = today.getFullYear();
@@ -330,8 +344,8 @@ function LogPage({ currentDay, moodLog, symptomLog, onDaySelect }) {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const WEEKS = ["日", "一", "二", "三", "四", "五", "六"];
 
-  // 简单映射：当月第N天 → 周期第N天（demo）
-  const cycleDay = (d) => ((d - 1) % 28) + 1;
+  // 从已保存的经期开始日期计算，不自动进入下一轮。
+  const cycleDay = (d) => periodStart ? Math.round((new Date(year, month, d) - new Date(`${periodStart}T00:00:00`)) / 86400000) + 1 : 0;
 
   const detail = selected ? {
     mood: moodLog[cycleDay(selected)],
@@ -407,6 +421,7 @@ function LogPage({ currentDay, moodLog, symptomLog, onDaySelect }) {
 // ═══════════════════════════════════════════
 
 function StatsPage({ moodLog, symptomLog, currentDay }) {
+  const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(currentDay);
 
   // 情绪均值
@@ -648,7 +663,9 @@ function BottomNav({ active, onChange }) {
 // ═══════════════════════════════════════════
 
 function Selene() {
-  const [day, setDay] = useState(1);
+  const [day, setDay] = useState(0);
+  const [savedCycle, setSavedCycle] = useState({ phaseByDay: {}, periodStart: "", cycleLength: 28 });
+  const getPhase = d => phaseFromTable(d, savedCycle.phaseByDay || {});
   const [moodLog, setMoodLog] = useState({});
   const [symptomLog, setSymptomLog] = useState({});
   const [tab, setTab] = useState("home");
@@ -663,8 +680,7 @@ function Selene() {
   const [coupleMode, setCoupleMode] = useState(true);
   const [reminderMsg, setReminderMsg] = useState(null);
 
-  const cycleStart = new Date();
-  cycleStart.setDate(cycleStart.getDate() - (day - 1));
+  const cycleStart = new Date(`${savedCycle.periodStart}T00:00:00`);
   const phase = getPhase(day);
 
   function logMood(d, score) {
@@ -690,6 +706,7 @@ function Selene() {
       }
       const cfg = await apiGet("/get_config");
       if (cfg) {
+        setSavedCycle(cfg);
         if (cfg.cycleLength) setCycleLength(cfg.cycleLength);
         if (cfg.periodStart) setPeriodStart(cfg.periodStart);
         if (cfg.periodEnd) setPeriodEnd(cfg.periodEnd);
@@ -707,8 +724,8 @@ function Selene() {
 
   async function saveConfig() {
     const r = await apiPost("/save_config", { cycleLength, periodStart, periodEnd });
-    if (r) setDay(cycleDayFromStart(periodStart, cycleLength));
-    setSaveMsg(r ? "周期设置已保存 ✓" : "保存失败，请重试");
+    if (r && r.success) { setSavedCycle(r); setDay(cycleDayFromStart(r.periodStart, r.cycleLength)); }
+    setSaveMsg(r && r.success ? "周期设置已保存 ✓" : "保存失败，请重试");
     setTimeout(() => setSaveMsg(null), 3000);
   }
 
@@ -721,8 +738,8 @@ function Selene() {
     const safeEnd = periodEnd && periodEnd < periodStart ? "" : periodEnd;
     if (safeEnd !== periodEnd) setPeriodEnd("");
     const r = await apiPost("/save_config", { cycleLength, periodStart, periodEnd: safeEnd });
-    if (r) setDay(cycleDayFromStart(periodStart, cycleLength));
-    setSaveMsg(r ? `已标记 ${periodStart} 来了 ✓` : "标记失败，请重试");
+    if (r && r.success) { setSavedCycle(r); setDay(cycleDayFromStart(r.periodStart, r.cycleLength)); }
+    setSaveMsg(r && r.success ? `已标记 ${periodStart} 来了 ✓` : "标记失败，请重试");
     setTimeout(() => setSaveMsg(null), 3000);
   }
 
@@ -746,7 +763,7 @@ function Selene() {
     排卵期: { from: "#1E2030", to: "#2A2C44", stars: "#F0E8D8", accent: "#C8C0B0" },
     黄体期: { from: "#221A30", to: "#332548", stars: "#E4D0F0", accent: C.purple },
   };
-  const sky = PHASE_SKY[phase.name];
+  const sky = PHASE_SKY[phase.name] || PHASE_SKY["黄体期"];
 
   // 星星：非均匀分布，大小不一
   const STARS = Array.from({ length: 45 }, (_, i) => ({
@@ -767,6 +784,7 @@ function Selene() {
   ];
 
   return (
+    <PhaseContext.Provider value={getPhase}>
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <div style={{ paddingBottom: 80, overflowX: "hidden" }}>
 
@@ -836,7 +854,7 @@ function Selene() {
 
               {/* 月相环 */}
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "0 32px 14px", position: "relative" }}>
-                <MoonRing day={day} total={cycleLength} />
+                <MoonRing day={day} total={savedCycle.cycleLength} />
               </div>
 
               {/* 滑条 */}
@@ -863,14 +881,14 @@ function Selene() {
               <MoodLogger day={day} moodLog={moodLog} onLog={logMood} />
               <SymptomLogger day={day} symptomLog={symptomLog} onToggle={toggleSymptom} />
               <MoodChartSmall currentDay={day} moodLog={moodLog} />
-              <NextPrediction cycleStart={cycleStart} />
+              {savedCycle.periodStart && <NextPrediction cycleStart={cycleStart} cycleLength={savedCycle.cycleLength} />}
               <TodayCard day={day} />
             </div>
           </>
         )}
 
         {tab === "log" && (
-          <LogPage currentDay={day} moodLog={moodLog} symptomLog={symptomLog} />
+          <LogPage currentDay={day} moodLog={moodLog} symptomLog={symptomLog} periodStart={savedCycle.periodStart} />
         )}
 
         {tab === "stats" && (
@@ -898,6 +916,7 @@ function Selene() {
         </div>
       )}
     </div>
+    </PhaseContext.Provider>
   );
 }
 

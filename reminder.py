@@ -62,11 +62,11 @@ def decide_reminder(today: date | None = None) -> dict | None:
     if not periods:
         return {"phase": "first_time", "day": 0, "days_left": 0}
 
-    st = cycle.current_phase(periods, today)
+    st = db.current_cycle_status(today)
     phase = st["phase"]
 
     # 预测日到了但还没记这轮 → 欠着，每天提醒记 D1
-    if phase == "unknown" and st["next_date"] != "未知":
+    if phase != "menstrual" and st["next_date"] != "未知":
         try:
             nxt = date.fromisoformat(st["next_date"])
         except ValueError:

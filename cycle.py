@@ -63,7 +63,7 @@ def cycle_day(periods: list[dict], today: date | None = None) -> int | None:
     return delta
 
 
-def current_phase(periods: list[dict], today: date | None = None) -> dict:
+def current_phase(periods: list[dict], today: date | None = None, cycle_length: int | None = None) -> dict:
     """
     返回当前阶段信息：
     {
@@ -76,8 +76,8 @@ def current_phase(periods: list[dict], today: date | None = None) -> dict:
     """
     today = today or date.today()
     cd = cycle_day(periods, today)
-    cycle = avg_cycle(periods)
-    nxt = predict_next(periods)
+    cycle = cycle_length if cycle_length is not None else avg_cycle(periods)
+    nxt = date.fromisoformat(periods[-1]["start_date"]) + timedelta(days=cycle) if periods else None
 
     if cd is None:
         return {
