@@ -114,6 +114,7 @@ def run():
                 assert history['records'][0]['end_date'] == end
                 page.reload()
                 expect(page.get_by_text('超过预计日期 2 天', exact=True)).to_be_visible()
+                expect(page.get_by_text('已过 2 天', exact=True)).to_have_count(1)
                 # Lost response after a committed write: retry must not duplicate.
                 attempts = []
 
@@ -167,6 +168,33 @@ def run():
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert not errors, errors
                 print('PASS: browser start/end -> real MCP -> reload -> new cycle -> history; retry, duplicate, undo; mobile no overflow.')
+                page.set_viewport_size({'width': 390, 'height': 844})
+                page.get_by_text('记录', exact=True).click()
+                historical_start = (today - timedelta(days=60)).isoformat()
+                historical_end = (today - timedelta(days=55)).isoformat()
+                page.get_by_label('选择月份').fill(historical_start[:7])
+                page.locator(f'button[aria-label^="{historical_start} "]').click()
+                expect(page.get_by_label('实际开始日期')).to_have_value(historical_start)
+                page.get_by_role('button', name='记录开始', exact=True).click()
+                expect(page.get_by_role('status')).to_contain_text('已保存')
+                page.get_by_label('选择月份').fill(historical_end[:7])
+                page.locator(f'button[aria-label^="{historical_end} "]').click()
+                expect(page.get_by_label('实际结束日期')).to_have_value(historical_end)
+                page.get_by_role('button', name='记录结束', exact=True).click()
+                expect(page.get_by_role('status')).to_contain_text('已保存')
+                expect(page.locator(f'button[aria-label^="{historical_end} "]')).to_contain_text('结束')
+                assert db.get_periods()[0]['end_date'] == historical_end
+                assert db.get_periods()[-1]['start_date'] == new_start
+                page.get_by_role('button', name='撤销上次记录', exact=True).click()
+                expect(page.get_by_role('status')).to_contain_text('已撤销')
+                assert db.get_periods()[0]['end_date'] == ''
+                page.get_by_role('button', name='记录结束', exact=True).click()
+                expect(page.get_by_role('status')).to_contain_text('已保存')
+                page.evaluate('window.scrollTo(0,0)')
+                page.screenshot(path=str(shot.with_name('selene-calendar-mobile.png')), full_page=True)
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                assert not errors, errors
+                print('PASS: month picker -> historical day -> start/end -> correct old cycle -> undo; calendar markers and mobile layout.')
                 print(f'Screenshot: {shot}')
             finally:
                 browser.close()

@@ -26,4 +26,11 @@ assert.equal(vm.runInContext("phaseFromTable(0, {}).name === UNKNOWN_PHASE.name"
 assert.equal(vm.runInContext('!!Selene()', context), true);
 assert.equal(vm.runInContext('!!TodayCard({day: 0})', context), true);
 assert.equal(vm.runInContext('!!MoonRing({day: 30, total: 28})', context), true);
+for (const hour of ['00:01:00', '12:00:00', '23:59:00']) {
+  context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [`2026-09-15T${hour}`])); }
+  };
+  assert.ok(vm.runInContext("JSON.stringify(NextPrediction({cycleStart:'2026-08-21',cycleLength:28}))", context).includes('还有 3 天'));
+  assert.ok(vm.runInContext("JSON.stringify(NextPrediction({cycleStart:'2026-07-22',cycleLength:28}))", context).includes('已过 27 天'));
+}
 console.log('Frontend checks passed: no rollover, server phase mapping, empty-state rendering.');

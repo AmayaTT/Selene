@@ -103,6 +103,33 @@ class PeriodActionTests(unittest.TestCase):
         paths = {route.path for route in selene_rest_deploy.app.routes}
         self.assertTrue({'/', '/selene_browser.js', '/period/action', '/period/undo'} <= paths)
 
+    def test_calendar_history_targets_and_validation(self):
+        july = db.add_period('2026-07-22', '2026-07-26')
+        august = db.add_period('2026-08-21', '2026-08-26')
+        db.set_config('cycle_length', '28')
+        for module in (selene_rest, selene_rest_deploy):
+            client = TestClient(module.app)
+            days = client.get('/calendar?month=2026-07').json()['days']
+            self.assertEqual(len(days), 31)
+            self.assertEqual(days['2026-07-22']['periodId'], july)
+            self.assertTrue(days['2026-07-22']['isStart'])
+            self.assertTrue(days['2026-07-26']['isEnd'])
+            self.assertTrue(days['2026-07-26']['recorded'])
+            self.assertEqual(days['2026-07-21']['phase'], 'unknown')
+            days = client.get('/calendar?month=2026-08').json()['days']
+            self.assertEqual(days['2026-08-26']['periodId'], august)
+            self.assertTrue(days['2026-08-26']['recorded'])
+            days = client.get('/calendar?month=2026-09').json()['days']
+            self.assertEqual(days['2026-09-15']['days_left'], 3)
+            self.assertEqual(days['2026-09-15']['phase'], 'luteal')
+            self.assertEqual(len(client.get('/calendar?month=2024-02').json()['days']), 29)
+            self.assertEqual(client.get('/calendar?month=2026-13').status_code, 422)
+        # An end marker selected in July must update July, leaving August intact.
+        response = client.post('/period/action', json={'action': 'end', 'date': '2026-07-27', 'request_id': 'historic-end', 'period_id': july})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(db.get_period_by_id(july)['end_date'], '2026-07-27')
+        self.assertEqual(db.get_period_by_id(august)['end_date'], '2026-08-26')
+
 
 if __name__ == '__main__':
     unittest.main()

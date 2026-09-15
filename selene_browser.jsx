@@ -137,9 +137,9 @@ function PeriodStatus({ status }) {
   </Card>;
 }
 
-function PeriodActions({ config, onChange }) {
-  const [startDate, setStartDate] = useState(localDateStr());
-  const [endDate, setEndDate] = useState(localDateStr());
+function PeriodActions({ config, onChange, initialDate }) {
+  const [startDate, setStartDate] = useState(initialDate || localDateStr());
+  const [endDate, setEndDate] = useState(initialDate || localDateStr());
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const inFlight = React.useRef(false);
@@ -177,7 +177,7 @@ function PeriodActions({ config, onChange }) {
   const buttonStyle = { padding: "10px 12px", borderRadius: 10, border: "none", background: C.purpleDeep, color: C.white, cursor: "pointer" };
   return <Card>
     <SectionLabel>经期记录</SectionLabel>
-    <div style={{ fontSize: 12, color: C.textLight, marginBottom: 12 }}>默认今天，也可以选择过去的日期补记。</div>
+    <div style={{ fontSize: 12, color: C.textLight, marginBottom: 12 }}>{initialDate ? `已选择 ${initialDate}，可补记开始或结束。` : "默认今天，也可以选择过去的日期补记。"}</div>
     <div style={{ display: "grid", gap: 12 }}>
       <label style={{ display: "grid", gap: 6, fontSize: 13, color: C.text }}>实际开始日期
         <input aria-label="实际开始日期" type="date" value={startDate} max={localDateStr()} disabled={busy} onChange={event => setStartDate(event.target.value)} style={inputStyle} />
@@ -362,10 +362,9 @@ function MoodChartSmall({ currentDay, moodLog, periodStart }) {
 }
 
 function NextPrediction({ cycleStart, cycleLength }) {
-  const next = new Date(cycleStart); next.setDate(next.getDate() + cycleLength);
-  const today = new Date();
-  const diff = Math.round((next - today) / (1000 * 60 * 60 * 24));
-  const ovulation = new Date(cycleStart); ovulation.setDate(ovulation.getDate() + cycleLength - 14);
+  const next = new Date(`${cycleStart}T00:00:00`); next.setDate(next.getDate() + cycleLength);
+  const diff = Math.round((Date.parse(localDateStr(next)) - Date.parse(localDateStr())) / 86400000);
+  const ovulation = new Date(`${cycleStart}T00:00:00`); ovulation.setDate(ovulation.getDate() + cycleLength - 14);
   const fmt = (d) => `${d.getMonth() + 1}月${d.getDate()}日`;
   return (
     <div style={{ background: C.cardAlt, borderRadius: 20, padding: "16px 18px" }}>
@@ -431,11 +430,22 @@ function PhaseBar({ currentDay }) {
 // 记录页 — 月历
 // ═══════════════════════════════════════════
 
-function LogPage({ currentDay, moodLog, symptomLog, periodStart, dateInfo, onLog, onToggle }) {
+function LogPage({ currentDay, moodLog, symptomLog, periodStart, dateInfo, onLog, onToggle, config = {}, onPeriodChange }) {
   const getPhase = React.useContext(PhaseContext);
   const [selected, setSelected] = useState(null);
   const today = new Date();
   const [viewMonth, setViewMonth] = useState(localDateStr().slice(0, 7));
+  const [calendar, setCalendar] = useState(null);
+  const [calendarError, setCalendarError] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setCalendarError(false);
+    apiGet(`/calendar?month=${viewMonth}`).then(result => {
+      if (!active) return;
+      if (result?.days) setCalendar(result); else setCalendarError(true);
+    });
+    return () => { active = false; };
+  }, [viewMonth, config]);
   const [year, monthNumber] = viewMonth.split("-").map(Number);
   const month = monthNumber - 1;
   const dateKey = d => `${viewMonth}-${String(d).padStart(2, "0")}`;
@@ -448,8 +458,10 @@ function LogPage({ currentDay, moodLog, symptomLog, periodStart, dateInfo, onLog
   const WEEKS = ["日", "一", "二", "三", "四", "五", "六"];
 
   // 从已保存的经期开始日期计算，不自动进入下一轮。
-  const cycleDay = (d) => dateInfo[dateKey(d)]?.day ?? (periodStart && dateKey(d) >= periodStart ? Math.round((new Date(year, month, d) - new Date(`${periodStart}T00:00:00`)) / 86400000) + 1 : 0);
-  const calendarPhase = d => dateInfo[dateKey(d)]
+  const monthDays = calendar?.month === viewMonth ? calendar.days : {};
+  const cycleDay = (d) => monthDays[dateKey(d)]?.day ?? dateInfo[dateKey(d)]?.day ?? 0;
+  const calendarPhase = d => monthDays[dateKey(d)]
+    ? phaseFromTable(1, { 1: monthDays[dateKey(d)].phase }) : dateInfo[dateKey(d)]
     ? phaseFromTable(1, { 1: dateInfo[dateKey(d)].phase }) : getPhase(cycleDay(d));
 
   const detail = selected ? {
@@ -465,7 +477,13 @@ function LogPage({ currentDay, moodLog, symptomLog, periodStart, dateInfo, onLog
         {year}年{month + 1}月
         {" "}<button aria-label="下个月" onClick={() => changeMonth(1)} disabled={viewMonth >= localDateStr().slice(0, 7)}>›</button>
       </div>
-      <div style={{ fontSize: 12, color: C.textLight, marginBottom: 20 }}>点击日期查看当天记录</div>
+      <label style={{ display: "flex", gap: 8, alignItems: "center", margin: "12px 0", color: C.text }}>选择月份
+        <input aria-label="选择月份" type="month" value={viewMonth} max={localDateStr().slice(0, 7)} onChange={event => {
+          if (/^\d{4}-\d{2}$/.test(event.target.value) && event.target.value <= localDateStr().slice(0, 7)) { setViewMonth(event.target.value); setSelected(null); }
+        }} style={{ padding: 8, borderRadius: 8, maxWidth: "65%" }} />
+      </label>
+      <div style={{ fontSize: 12, color: C.textLight, marginBottom: 20 }}>点击日期查看阶段、补记经期和当天感受。阶段文字带“预计”的为推算。</div>
+      {calendarError && <div role="alert">月份加载失败，请切换月份重试。</div>}
 
       {/* 星期头 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 8 }}>
@@ -482,13 +500,16 @@ function LogPage({ currentDay, moodLog, symptomLog, periodStart, dateInfo, onLog
           const phase = calendarPhase(d);
           const isToday = dateKey(d) === localDateStr();
           const isSel = selected === d;
-          const bg = mood && mood > 0 ? moodColor(mood) : phase.color + "22";
+          const info = monthDays[dateKey(d)];
+          const colors = { menstrual: "#F1BBC9", follicular: "#BFE1CB", ovulation: "#F3D49E", luteal: "#CDC1ED" };
+          const bg = colors[info?.phase] || "#ECE9EF";
           return (
-            <button key={d} onClick={() => setSelected(isSel ? null : d)} style={{
-              aspectRatio: "1", borderRadius: 10, border: isSel ? `2px solid ${phase.color}` : isToday ? `2px solid ${C.purpleDeep}` : "2px solid transparent",
+            <button key={d} aria-label={`${dateKey(d)} ${info?.label || "阶段待确认"}` } onClick={() => setSelected(isSel ? null : d)} style={{
+              aspectRatio: "1", padding: "2px 0", borderRadius: 10, border: isSel ? `2px solid ${C.text}` : isToday ? `2px solid ${C.purpleDeep}` : "2px solid transparent",
               background: bg, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
             }}>
               <span style={{ fontSize: 13, color: C.text, fontWeight: isToday ? 700 : 400 }}>{d}</span>
+              <span style={{ fontSize: 9, color: C.text }}>{info?.isStart ? "开始" : info?.isEnd ? "结束" : info?.recorded ? "经期" : info?.phase === "unknown" || !info ? "待确认" : {menstrual:"预计经期",follicular:"预计卵泡",ovulation:"预计排卵",luteal:"预计黄体"}[info.phase]}</span>
               {(symptomLog[dateKey(d)] || []).length > 0 && <span style={{ width: 4, height: 4, borderRadius: "50%", background: phase.color, display: "block" }} />}
             </button>
           );
@@ -497,7 +518,7 @@ function LogPage({ currentDay, moodLog, symptomLog, periodStart, dateInfo, onLog
 
       {/* 图例 */}
       <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
-        {[["😞", "很差"], ["😐", "还行"], ["😊", "很好"]].map(([e, l]) => (
+        {[["🩷", "经期"], ["🟢", "卵泡期"], ["🟠", "排卵期"], ["🟣", "黄体期"]].map(([e, l]) => (
           <div key={l} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: C.textLight }}>
             <span>{e}</span><span>{l}</span>
           </div>
@@ -510,7 +531,7 @@ function LogPage({ currentDay, moodLog, symptomLog, periodStart, dateInfo, onLog
       {/* 当天详情 */}
       {selected && detail && (
         <div style={{ marginTop: 20, background: detail.phase.color + "22", border: `1px solid ${detail.phase.color}55`, borderRadius: 20, padding: "16px 18px" }}>
-          <div style={{ fontWeight: 600, color: C.text, marginBottom: 10 }}>{month + 1}月{selected}日 · {detail.phase.name} Day {cycleDay(selected)}</div>
+          <div style={{ fontWeight: 600, color: C.text, marginBottom: 10 }}>{month + 1}月{selected}日 · {monthDays[dateKey(selected)]?.label || "阶段待确认"}{cycleDay(selected) > 0 ? ` · Day ${cycleDay(selected)}` : ""}</div>
           <div style={{ fontSize: 13, color: C.textLight, marginBottom: 6 }}>
             心情：{detail.mood == null ? "未记录" : detail.mood === -1 ? "无感觉" : `${MOOD_EMOJIS.find(e => e.score === detail.mood)?.emoji} ${MOOD_EMOJIS.find(e => e.score === detail.mood)?.label}`}
           </div>
@@ -519,6 +540,7 @@ function LogPage({ currentDay, moodLog, symptomLog, periodStart, dateInfo, onLog
           </div>
           {dateKey(selected) <= localDateStr() && (
             <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+              {onPeriodChange && monthDays[dateKey(selected)] && <PeriodActions key={`period-${dateKey(selected)}`} initialDate={dateKey(selected)} config={{ ...config, ...monthDays[dateKey(selected)] }} onChange={onPeriodChange} />}
               <MoodLogger key={`mood-${dateKey(selected)}`} day={cycleDay(selected)} logDate={dateKey(selected)} moodLog={moodLog} onLog={onLog} />
               <SymptomLogger key={`symptom-${dateKey(selected)}`} day={cycleDay(selected)} logDate={dateKey(selected)} symptomLog={symptomLog} onToggle={onToggle} />
             </div>
@@ -1037,14 +1059,14 @@ function Selene() {
               )}
               <SymptomLogger day={day} symptomLog={symptomLog} onToggle={toggleSymptom} />
               <MoodChartSmall currentDay={day} moodLog={moodLog} periodStart={savedCycle.periodStart} />
-              {savedCycle.periodStart && <NextPrediction cycleStart={cycleStart} cycleLength={savedCycle.cycleLength} />}
+              {savedCycle.periodStart && <NextPrediction cycleStart={savedCycle.periodStart} cycleLength={savedCycle.cycleLength} />}
               <TodayCard day={day} />
             </div>
           </>
         )}
 
         {tab === "log" && (
-          <LogPage currentDay={day} moodLog={moodLog} symptomLog={symptomLog} periodStart={savedCycle.periodStart} dateInfo={dateInfo} onLog={logMood} onToggle={toggleSymptom} />
+          <LogPage currentDay={day} moodLog={moodLog} symptomLog={symptomLog} periodStart={savedCycle.periodStart} dateInfo={dateInfo} onLog={logMood} onToggle={toggleSymptom} config={savedCycle} onPeriodChange={periodChanged} />
         )}
 
         {tab === "stats" && (
