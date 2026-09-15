@@ -20,6 +20,10 @@ SYMPTOMS_LIST = ["头疼", "偏头痛", "头晕", "腰酸", "腿酸", "水肿", 
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # ★ MCP / REST / Memora 网关三个进程共用这一个库文件。
+    # WAL 让读写不互相阻塞；busy_timeout 让撞上写锁时排队等待而不是直接报错。
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 15000")
     return conn
 
 
