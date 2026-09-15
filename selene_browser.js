@@ -101,6 +101,22 @@ function phaseFromTable(day, table) {
   return PHASES[PHASE_KEYS.indexOf(table[String(day)])] || UNKNOWN_PHASE;
 }
 const PhaseContext = React.createContext(() => UNKNOWN_PHASE);
+function moodEntries(moodLog) {
+  return Object.entries(moodLog).filter(([, score]) => score > 0).sort(([a], [b]) => a.localeCompare(b)).map(([date, mood]) => ({
+    date,
+    mood
+  }));
+}
+function phaseAverages(moodLog, dateInfo) {
+  return PHASES.map((phase, index) => {
+    const values = moodEntries(moodLog).filter(row => dateInfo[row.date]?.phase === PHASE_KEYS[index]);
+    return {
+      name: phase.name,
+      color: phase.color,
+      avg: values.length ? +(values.reduce((sum, row) => sum + row.mood, 0) / values.length).toFixed(1) : null
+    };
+  });
+}
 const SYMPTOMS_LIST = ["头疼", "偏头痛", "头晕", "腰酸", "腿酸", "水肿", "乳房胀痛", "小腹坠痛", "痛经", "腹痛", "腹胀", "恶心", "腹泻", "便秘", "食欲旺盛", "食欲不振", "疲惫", "乏力", "失眠", "嗜睡", "长痘", "畏寒", "情绪波动", "易怒", "焦虑", "心情低落", "状态良好"];
 const MOOD_EMOJIS = [{
   score: 2,
@@ -123,19 +139,6 @@ const MOOD_EMOJIS = [{
   emoji: "😊",
   label: "很好"
 }];
-const baseMood = Array.from({
-  length: 28
-}, (_, i) => {
-  const day = i + 1;
-  let base = 6;
-  if (day <= 3) base = 4;else if (day <= 5) base = 5;else if (day <= 13) base = 7;else if (day <= 16) base = 8.5;else if (day <= 20) base = 7;else if (day <= 25) base = 5.5;else base = 4.5;
-  const noise = Math.sin(day * 2.3) * 0.8 + Math.cos(day * 1.7) * 0.5;
-  return {
-    day,
-    mood: Math.min(10, Math.max(1, +(base + noise).toFixed(1))),
-    phase: getPhase(day).name
-  };
-});
 function moodColor(score) {
   if (!score || score < 0) return "#E2DDE8";
   if (score <= 3) return "#D4BDB0";
@@ -286,12 +289,15 @@ function MoonRing({
 function MoodLogger({
   day,
   moodLog,
-  onLog
+  onLog,
+  logDate = localDateStr()
 }) {
   const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
-  const logged = moodLog[day];
-  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "今天心情"), logged != null ? /*#__PURE__*/React.createElement("div", {
+  const logged = moodLog[logDate];
+  const [editing, setEditing] = useState(false);
+  useEffect(() => setEditing(false), [logDate, logged]);
+  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, logDate === localDateStr() ? "今天心情" : `${logDate} 心情`), logged != null && !editing ? /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -312,7 +318,7 @@ function MoodLogger({
       color: phase.color
     }
   }, logged, "/10"), "，", MOOD_EMOJIS.find(e => e.score === logged)?.label)), /*#__PURE__*/React.createElement("button", {
-    onClick: () => onLog(day, null),
+    onClick: () => setEditing(true),
     style: {
       fontSize: 11,
       color: C.textLight,
@@ -332,7 +338,9 @@ function MoodLogger({
     label
   }) => /*#__PURE__*/React.createElement("button", {
     key: score,
-    onClick: () => onLog(day, score),
+    onClick: async () => {
+      if (await onLog(logDate, score)) setEditing(false);
+    },
     style: {
       display: "flex",
       flexDirection: "column",
@@ -355,7 +363,9 @@ function MoodLogger({
       color: C.textLight
     }
   }, label)))), /*#__PURE__*/React.createElement("button", {
-    onClick: () => onLog(day, -1),
+    onClick: async () => {
+      if (await onLog(logDate, -1)) setEditing(false);
+    },
     style: {
       width: "100%",
       padding: "9px",
@@ -366,24 +376,25 @@ function MoodLogger({
       border: `1px dashed #D8D4E0`,
       cursor: "pointer"
     }
-  }, "今天没啥感觉，跳过")));
+  }, "没啥感觉，跳过")));
 }
 function SymptomLogger({
   day,
   symptomLog,
-  onToggle
+  onToggle,
+  logDate = localDateStr()
 }) {
   const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(day);
-  const selected = symptomLog[day] || [];
+  const selected = symptomLog[logDate] || [];
   const isGood = selected.includes("状态良好");
   const [customOpen, setCustomOpen] = useState(false);
   const [customText, setCustomText] = useState("");
   function handleToggle(s) {
     if (s === "状态良好") {
-      onToggle(day, "__good__");
+      onToggle(logDate, "__good__");
     } else {
-      if (!isGood) onToggle(day, s);
+      if (!isGood) onToggle(logDate, s);
     }
   }
   function openCustom() {
@@ -394,9 +405,9 @@ function SymptomLogger({
     const text = customText.trim();
     setCustomOpen(false);
     if (!text || selected.includes(text)) return;
-    onToggle(day, text);
+    onToggle(logDate, text);
   }
-  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "今日症状"), /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, logDate === localDateStr() ? "今日症状" : `${logDate} 症状`), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
@@ -491,14 +502,12 @@ function SymptomLogger({
 }
 function MoodChartSmall({
   currentDay,
-  moodLog
+  moodLog,
+  periodStart
 }) {
   const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(currentDay);
-  const data = baseMood.slice(0, currentDay).map(d => ({
-    ...d,
-    mood: moodLog[d.day] > 0 ? moodLog[d.day] : d.mood
-  }));
+  const data = moodEntries(moodLog).filter(row => (!periodStart || row.date >= periodStart) && row.date <= localDateStr());
   return /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(SectionLabel, null, "本周期情绪走向"), /*#__PURE__*/React.createElement(ResponsiveContainer, {
     width: "100%",
     height: 120
@@ -525,14 +534,14 @@ function MoodChartSmall({
     stopColor: phase.color,
     stopOpacity: 0.02
   }))), /*#__PURE__*/React.createElement(XAxis, {
-    dataKey: "day",
+    dataKey: "date",
     tick: {
       fontSize: 10,
       fill: C.textLight
     },
     tickLine: false,
     axisLine: false,
-    tickFormatter: v => v % 7 === 0 || v === 1 ? `D${v}` : ""
+    tickFormatter: v => v.slice(5)
   }), /*#__PURE__*/React.createElement(YAxis, {
     domain: [1, 10],
     tick: {
@@ -543,8 +552,7 @@ function MoodChartSmall({
     axisLine: false,
     tickCount: 3
   }), /*#__PURE__*/React.createElement(Tooltip, {
-    formatter: v => [v, "情绪"],
-    labelFormatter: v => `Day ${v}`
+    formatter: v => [v, "情绪"]
   }), /*#__PURE__*/React.createElement(Area, {
     type: "monotone",
     dataKey: "mood",
@@ -714,24 +722,35 @@ function LogPage({
   currentDay,
   moodLog,
   symptomLog,
-  onDaySelect,
-  periodStart
+  periodStart,
+  dateInfo,
+  onLog,
+  onToggle
 }) {
   const getPhase = React.useContext(PhaseContext);
   const [selected, setSelected] = useState(null);
   const today = new Date();
-  const year = today.getFullYear();
-  const month = today.getMonth();
+  const [viewMonth, setViewMonth] = useState(localDateStr().slice(0, 7));
+  const [year, monthNumber] = viewMonth.split("-").map(Number);
+  const month = monthNumber - 1;
+  const dateKey = d => `${viewMonth}-${String(d).padStart(2, "0")}`;
+  function changeMonth(offset) {
+    setViewMonth(localDateStr(new Date(year, month + offset, 1)).slice(0, 7));
+    setSelected(null);
+  }
   const firstDay = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const WEEKS = ["日", "一", "二", "三", "四", "五", "六"];
 
   // 从已保存的经期开始日期计算，不自动进入下一轮。
-  const cycleDay = d => periodStart ? Math.round((new Date(year, month, d) - new Date(`${periodStart}T00:00:00`)) / 86400000) + 1 : 0;
+  const cycleDay = d => dateInfo[dateKey(d)]?.day ?? (periodStart && dateKey(d) >= periodStart ? Math.round((new Date(year, month, d) - new Date(`${periodStart}T00:00:00`)) / 86400000) + 1 : 0);
+  const calendarPhase = d => dateInfo[dateKey(d)] ? phaseFromTable(1, {
+    1: dateInfo[dateKey(d)].phase
+  }) : getPhase(cycleDay(d));
   const detail = selected ? {
-    mood: moodLog[cycleDay(selected)],
-    symptoms: symptomLog[cycleDay(selected)] || [],
-    phase: getPhase(cycleDay(selected))
+    mood: moodLog[dateKey(selected)],
+    symptoms: symptomLog[dateKey(selected)] || [],
+    phase: calendarPhase(selected)
   } : null;
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -745,7 +764,14 @@ function LogPage({
       fontFamily: "Georgia, serif",
       marginBottom: 4
     }
-  }, year, "年", month + 1, "月"), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("button", {
+    "aria-label": "上个月",
+    onClick: () => changeMonth(-1)
+  }, "‹"), " ", year, "年", month + 1, "月", " ", /*#__PURE__*/React.createElement("button", {
+    "aria-label": "下个月",
+    onClick: () => changeMonth(1),
+    disabled: viewMonth >= localDateStr().slice(0, 7)
+  }, "›")), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: C.textLight,
@@ -780,9 +806,9 @@ function LogPage({
   }, (_, i) => {
     const d = i + 1;
     const cd = cycleDay(d);
-    const mood = moodLog[cd];
-    const phase = getPhase(cd);
-    const isToday = d === today.getDate();
+    const mood = moodLog[dateKey(d)];
+    const phase = calendarPhase(d);
+    const isToday = dateKey(d) === localDateStr();
     const isSel = selected === d;
     const bg = mood && mood > 0 ? moodColor(mood) : phase.color + "22";
     return /*#__PURE__*/React.createElement("button", {
@@ -806,7 +832,7 @@ function LogPage({
         color: C.text,
         fontWeight: isToday ? 700 : 400
       }
-    }, d), (symptomLog[cd] || []).length > 0 && /*#__PURE__*/React.createElement("span", {
+    }, d), (symptomLog[dateKey(d)] || []).length > 0 && /*#__PURE__*/React.createElement("span", {
       style: {
         width: 4,
         height: 4,
@@ -872,7 +898,25 @@ function LogPage({
       fontSize: 13,
       color: C.textLight
     }
-  }, "症状：", detail.symptoms.length === 0 ? "未记录" : detail.symptoms.join("、"))));
+  }, "症状：", detail.symptoms.length === 0 ? "未记录" : detail.symptoms.join("、")), dateKey(selected) <= localDateStr() && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 12,
+      marginTop: 16
+    }
+  }, /*#__PURE__*/React.createElement(MoodLogger, {
+    key: `mood-${dateKey(selected)}`,
+    day: cycleDay(selected),
+    logDate: dateKey(selected),
+    moodLog: moodLog,
+    onLog: onLog
+  }), /*#__PURE__*/React.createElement(SymptomLogger, {
+    key: `symptom-${dateKey(selected)}`,
+    day: cycleDay(selected),
+    logDate: dateKey(selected),
+    symptomLog: symptomLog,
+    onToggle: onToggle
+  }))));
 }
 
 // ═══════════════════════════════════════════
@@ -882,7 +926,8 @@ function LogPage({
 function StatsPage({
   moodLog,
   symptomLog,
-  currentDay
+  currentDay,
+  dateInfo
 }) {
   const getPhase = React.useContext(PhaseContext);
   const phase = getPhase(currentDay);
@@ -892,15 +937,7 @@ function StatsPage({
   const avgMood = moodValues.length ? (moodValues.reduce((a, b) => a + b, 0) / moodValues.length).toFixed(1) : "—";
 
   // 各阶段情绪均值
-  const phaseAvg = PHASES.map(p => {
-    const vals = baseMood.filter(d => d.day >= p.days[0] && d.day <= p.days[1]).map(d => moodLog[d.day] > 0 ? moodLog[d.day] : d.mood);
-    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-    return {
-      name: p.name.replace("期", ""),
-      avg: +avg.toFixed(1),
-      color: p.color
-    };
-  });
+  const phaseAvg = phaseAverages(moodLog, dateInfo);
 
   // 症状频率
   const symptomCount = {};
@@ -979,12 +1016,12 @@ function StatsPage({
       color: C.purpleDeep,
       fontFamily: "Georgia, serif"
     }
-  }, moodValues.length), /*#__PURE__*/React.createElement("div", {
+  }, new Set([...Object.keys(moodLog), ...Object.keys(symptomLog)]).size), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: C.textLight
     }
-  }, "/ ", currentDay, " 天"))), /*#__PURE__*/React.createElement(Card, {
+  }, "累计记录日期"))), /*#__PURE__*/React.createElement(Card, {
     style: {
       marginBottom: 14
     }
@@ -1021,7 +1058,7 @@ function StatsPage({
       fontWeight: 600,
       color: C.text
     }
-  }, p.avg), /*#__PURE__*/React.createElement("div", {
+  }, p.avg ?? "—"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: C.textLight,
@@ -1496,6 +1533,9 @@ function Selene() {
   const getPhase = d => phaseFromTable(d, savedCycle.phaseByDay || {});
   const [moodLog, setMoodLog] = useState({});
   const [symptomLog, setSymptomLog] = useState({});
+  const [dateInfo, setDateInfo] = useState({});
+  const symptomRef = React.useRef({});
+  const saveQueue = React.useRef(Promise.resolve());
   const [tab, setTab] = useState("home");
   const [cycleLength, setCycleLength] = useState(28);
   const [periodStart, setPeriodStart] = useState("");
@@ -1509,34 +1549,61 @@ function Selene() {
   const [reminderMsg, setReminderMsg] = useState(null);
   const cycleStart = new Date(`${savedCycle.periodStart}T00:00:00`);
   const phase = getPhase(day);
-  function logMood(d, score) {
-    setMoodLog(prev => ({
-      ...prev,
-      [d]: score
-    }));
-    apiPost("/log_mood", {
-      day: d,
-      score: score === null ? -1 : score
+  function queueSave(action) {
+    const pending = saveQueue.current.then(action).catch(() => false);
+    saveQueue.current = pending;
+    return pending;
+  }
+  function saveFailed() {
+    setSaveMsg("保存失败，原记录已保留，请重试");
+    setTimeout(() => setSaveMsg(null), 3000);
+    return false;
+  }
+  function logMood(logDate, score) {
+    return queueSave(async () => {
+      const result = await apiPost("/log_mood", {
+        day: 0,
+        date: logDate,
+        score
+      });
+      if (!result?.success) return saveFailed();
+      setMoodLog(prev => ({
+        ...prev,
+        [result.date]: result.score
+      }));
+      setDateInfo(prev => ({
+        ...prev,
+        [result.date]: {
+          day: result.day,
+          phase: result.phase
+        }
+      }));
+      return true;
     });
   }
-  function toggleSymptom(d, s) {
-    setSymptomLog(prev => {
-      let next;
-      if (s === "__good__") {
-        const cur = prev[d] || [];
-        next = cur.includes("状态良好") ? [] : ["状态良好"];
-      } else {
-        const cur = prev[d] || [];
-        next = cur.includes(s) ? cur.filter(x => x !== s) : [...cur, s];
-      }
-      apiPost("/log_symptoms", {
-        day: d,
+  function toggleSymptom(logDate, symptom) {
+    return queueSave(async () => {
+      const current = symptomRef.current[logDate] || [];
+      const next = symptom === "__good__" ? current.includes("状态良好") ? [] : ["状态良好"] : current.includes(symptom) ? current.filter(x => x !== symptom) : [...current.filter(x => x !== "状态良好"), symptom];
+      const result = await apiPost("/log_symptoms", {
+        day: 0,
+        date: logDate,
         symptoms: next
       });
-      return {
-        ...prev,
-        [d]: next
+      if (!result?.success) return saveFailed();
+      symptomRef.current = {
+        ...symptomRef.current,
+        [result.date]: result.symptoms
       };
+      setSymptomLog(symptomRef.current);
+      setDateInfo(prev => ({
+        ...prev,
+        [result.date]: {
+          day: result.day,
+          phase: result.phase
+        }
+      }));
+      return true;
     });
   }
   useEffect(() => {
@@ -1544,7 +1611,11 @@ function Selene() {
       const logs = await apiGet("/get_logs");
       if (logs) {
         if (logs.moodLog) setMoodLog(logs.moodLog);
-        if (logs.symptomLog) setSymptomLog(logs.symptomLog);
+        if (logs.symptomLog) {
+          symptomRef.current = logs.symptomLog;
+          setSymptomLog(logs.symptomLog);
+        }
+        if (logs.dateInfo) setDateInfo(logs.dateInfo);
       }
       const cfg = await apiGet("/get_config");
       if (cfg) {
@@ -1882,7 +1953,8 @@ function Selene() {
     onToggle: toggleSymptom
   }), /*#__PURE__*/React.createElement(MoodChartSmall, {
     currentDay: day,
-    moodLog: moodLog
+    moodLog: moodLog,
+    periodStart: savedCycle.periodStart
   }), savedCycle.periodStart && /*#__PURE__*/React.createElement(NextPrediction, {
     cycleStart: cycleStart,
     cycleLength: savedCycle.cycleLength
@@ -1892,11 +1964,15 @@ function Selene() {
     currentDay: day,
     moodLog: moodLog,
     symptomLog: symptomLog,
-    periodStart: savedCycle.periodStart
+    periodStart: savedCycle.periodStart,
+    dateInfo: dateInfo,
+    onLog: logMood,
+    onToggle: toggleSymptom
   }), tab === "stats" && /*#__PURE__*/React.createElement(StatsPage, {
     moodLog: moodLog,
     symptomLog: symptomLog,
-    currentDay: day
+    currentDay: day,
+    dateInfo: dateInfo
   }), tab === "me" && /*#__PURE__*/React.createElement(MePage, {
     cycleLength: cycleLength,
     setCycleLength: setCycleLength,

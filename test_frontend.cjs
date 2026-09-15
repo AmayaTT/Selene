@@ -7,6 +7,7 @@ class FixedDate extends Date {
 }
 const react = {
   useState: value => [value, () => {}],
+  useRef: value => ({ current: value }),
   useEffect: () => {},
   createContext: value => ({ value, Provider: 'provider' }),
   useContext: context => context.value,

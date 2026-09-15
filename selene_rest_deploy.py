@@ -62,12 +62,16 @@ except Exception:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动后台定时任务；退出时取消，重启自愈（feed_log 幂等兜底）。"""
+    db.init_db()
+    db.migrate_cycle_config()
     task = asyncio.create_task(_feed_loop())
     task_rem = asyncio.create_task(reminder.reminder_loop())
     try:
         yield
     finally:
         task.cancel()
+        task_rem.cancel()
+        await asyncio.gather(task, task_rem, return_exceptions=True)
 
 
 app = FastAPI(title="Selene REST API", lifespan=lifespan)
@@ -117,21 +121,32 @@ def get_logs():
     return {
         "moodLog": db.get_mood_log(),
         "symptomLog": db.get_symptom_log(),
+        "dateInfo": db.get_log_date_info(),
     }
 
 
 @app.post("/log_mood")
 def log_mood(body: MoodBody):
     """记录/覆盖某天情绪分数。score=-1 表示'无感觉'。date 缺省取今天。"""
-    db.set_mood(body.day, body.score, body.date or datetime.now().date().isoformat())
-    return {"success": True, "day": body.day, "score": body.score}
+    try:
+        value = db.normalize_log_date(body.date)
+        info = db.log_date_info(value)
+        db.set_mood(info["day"], body.score, value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"success": True, "date": value, **info, "score": body.score}
 
 
 @app.post("/log_symptoms")
 def log_symptoms(body: SymptomsBody):
     """记录/覆盖某天症状数组。date 缺省取今天。"""
-    db.set_symptoms(body.day, body.symptoms, body.date or datetime.now().date().isoformat())
-    return {"success": True, "day": body.day, "symptoms": body.symptoms}
+    try:
+        value = db.normalize_log_date(body.date)
+        info = db.log_date_info(value)
+        db.set_symptoms(info["day"], body.symptoms, value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"success": True, "date": value, **info, "symptoms": body.symptoms}
 
 
 @app.get("/get_config")

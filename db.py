@@ -44,12 +44,14 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS mood_log (
-            day INTEGER PRIMARY KEY,
+            date TEXT PRIMARY KEY NOT NULL,
+            day INTEGER,
             score INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS symptom_log (
-            day INTEGER PRIMARY KEY,
+            date TEXT PRIMARY KEY NOT NULL,
+            day INTEGER,
             symptoms TEXT DEFAULT '[]'
         );
 
@@ -75,17 +77,13 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    _ensure_columns()
 
 
 def _ensure_columns():
-    """安全迁移：给 mood_log / symptom_log 补 date 列（真实日期 YYYY-MM-DD）。"""
-    conn = get_db()
-    for table in ("mood_log", "symptom_log"):
-        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if "date" not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN date TEXT DEFAULT ''")
-    conn.commit()
-    conn.close()
+    """兼容旧启动入口；迁移前备份并保留原表，可重复运行。"""
+    from log_migration import migrate
+    return migrate(DB_PATH)
 
 
 # ---- 经期记录 CRUD ----
@@ -197,9 +195,11 @@ def get_mood_log() -> dict:
 
 def set_mood(day: int, score: int, date: str = ""):
     """写入/覆盖某天的情绪分数。score=-1 表示'无感觉'。date 为真实日期 YYYY-MM-DD。"""
+    date = normalize_log_date(date)
     conn = get_db()
     conn.execute(
-        "INSERT OR REPLACE INTO mood_log (day, score, date) VALUES (?, ?, ?)",
+        "INSERT INTO mood_log (day, score, date) VALUES (?, ?, ?) "
+        "ON CONFLICT(date) DO UPDATE SET day=excluded.day, score=excluded.score",
         (day, score, date)
     )
     conn.commit()
@@ -224,9 +224,11 @@ def get_symptom_log() -> dict:
 
 def set_symptoms(day: int, symptoms: list, date: str = ""):
     """写入/覆盖某天的症状数组。date 为真实日期 YYYY-MM-DD。"""
+    date = normalize_log_date(date)
     conn = get_db()
     conn.execute(
-        "INSERT OR REPLACE INTO symptom_log (day, symptoms, date) VALUES (?, ?, ?)",
+        "INSERT INTO symptom_log (day, symptoms, date) VALUES (?, ?, ?) "
+        "ON CONFLICT(date) DO UPDATE SET day=excluded.day, symptoms=excluded.symptoms",
         (day, json.dumps(symptoms, ensure_ascii=False), date)
     )
     conn.commit()
@@ -234,6 +236,31 @@ def set_symptoms(day: int, symptoms: list, date: str = ""):
 
 
 # ---- 情绪关怀 / 互喂留痕 ----
+
+def normalize_log_date(value):
+    from log_migration import valid_date
+    value = value or date.today().isoformat()
+    if not valid_date(value):
+        raise ValueError("日期必须是有效的 YYYY-MM-DD")
+    return value
+
+
+def log_date_info(value):
+    """根据该日期之前的真实经期记录，计算辅助周期日和阶段。"""
+    import cycle
+    value = normalize_log_date(value)
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM periods WHERE start_date<=? ORDER BY start_date,id", (value,)).fetchall()
+    conn.close()
+    periods = [dict(r) for r in rows]
+    configured = get_config("cycle_length")
+    status = cycle.current_phase(periods, date.fromisoformat(value), int(configured) if configured else None)
+    return {"day": status["day"], "phase": status["phase"]}
+
+
+def get_log_date_info():
+    dates = set(get_mood_log()) | set(get_symptom_log())
+    return {value: log_date_info(value) for value in sorted(dates)}
 
 def add_care_log(day: int, date: str, score: int, memory_id,
                  related_count: int, memora_ok: bool):
