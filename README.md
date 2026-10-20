@@ -158,8 +158,36 @@ curl -X POST http://localhost:8010/reminder_test
 | `remind_enabled` | 总开关 | `1` 开 / `0` 关 |
 | `remind_times` | 每天推送的时间点（逗号分隔） | `08:30,21:00` |
 | `couple_mode` | 提醒语气 | `1` 伴侣版 / `0` 中性版 |
+| `reminder_title` | 推送标题（留空用默认） | `Selene 关心你 💕` |
 
 > 提醒**默认关闭**，只有填了 Key 才会推。不填 Key 完全不影响 Selene 的记录功能——这是"能选"的哲学。
+
+### 自定义推送文案
+
+默认文案在 `prompts.py` 的 `NEUTRAL` 里，每个阶段若干条，**按日期轮转**选用——
+不会连续两天推同一句。
+
+**想换成自己的口吻，直接改 `prompts.py` 里的 `COUPLE` 就行，不用动代码。**
+填了的阶段在 `couple_mode=1` 时优先用，没填的自动回落默认文案：
+
+```python
+COUPLE = {
+    "menstrual": [
+        "第{day}天了，还疼吗？",
+        "别硬撑，热水袋灌上。",
+    ],
+    "luteal": [
+        "这几天容易累，早点睡。",
+    ],
+}
+```
+
+可用的键：`pre_menstrual` / `menstrual` / `follicular` / `ovulation` /
+`luteal` / `post_menstrual` / `due_check` / `first_time`。
+
+可用的占位符：`{day}` 周期第几天、`{days_left}` 还有几天、`{flow_desc}` 量多量少。
+
+改完重启 Selene 生效。文案条数越多越不容易重复。
 
 ---
 

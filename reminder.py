@@ -104,17 +104,25 @@ def _push_serverchan(sendkey: str, title: str, desp: str) -> bool:
 
 
 def build_reminder(info: dict) -> dict | None:
-    """根据判断结果，从文案库取一条话，返回 {title, body}。"""
+    """根据判断结果，从文案库取一条话，返回 {title, body}。
+
+    2026-10-20：`couple_mode` 以前**写死 False**，配置里的 couple_mode=1 根本
+    没生效，所以一直推的是中性科普口吻。现在改成读配置。
+
+    标题也走配置（`reminder_title`），默认「Selene 关心你 💕」——
+    想用自己的名字，往 config 里填一行就行，不用改代码。
+    """
     phase = info["phase"]
+    couple = _cfg("couple_mode", "1") == "1"
     text = prompts.get_reminder(
-        phase, couple_mode=False,
+        phase, couple_mode=couple,
         days_left=info.get("days_left", 0),
         day=info.get("day", 0),
         flow_desc=_flow_desc(),
     )
     if not text:
         return None
-    title = "Selene 关心你 💕"
+    title = _cfg("reminder_title", "") or "Selene 关心你 💕"
     return {"title": title, "body": text}
 
 

@@ -1,19 +1,35 @@
 """
 Selene - 文案库
-按周期阶段分组的温柔提醒与科普。
+按周期阶段分组的提醒与科普。
 
-开源版说明：
-本仓库只分发中性版（NEUTRAL）文案，面向任何用户、语气中立、不针对特定关系。
-伴侣定制版（COUPLE）为项目作者私用，包含仅对特定伴侣可见的私密表达，已从
-开源分支移除，不在本仓库内分发。如需自用，可在本地自行扩展。
+开源版只带中性版（NEUTRAL），面向任何用户、语气中立。
 
-v2 更新：每个阶段至少10条文案，告别重复。
+**想换成自己的口吻**：往下面的 `COUPLE` 里加就行，不用改逻辑。
+每个阶段一个字符串列表，填了的阶段在 `couple_mode=1` 时优先用它，
+没填的阶段自动回落 NEUTRAL。例如：
+
+    COUPLE = {
+        "menstrual": [
+            "第{day}天了，记得多喝热水。",
+            "今天累就早点休息。",
+        ],
+        "luteal": [
+            "这几天容易困，晚上早点睡。",
+        ],
+    }
+
+可用的占位符：`{day}` 周期第几天、`{days_left}` 还有几天、`{flow_desc}` 量多量少。
+
+2026-10-20 改：
+  · `get_reminder` 从 random.choice 改成**按日期轮转** —— 随机会在小池子里
+    连续撞同一条（实测前一天和当天推了同一句），轮转保证一轮用完才重复。
+  · `COUPLE` 作为扩展点暴露出来，留空即可。
 """
 
-import random
+from datetime import date
 
 # ======================================================================
-#  中性版（Selene → 用户）
+#  中性版（默认文案）
 # ======================================================================
 
 NEUTRAL = {
@@ -78,6 +94,17 @@ NEUTRAL = {
 }
 
 # ======================================================================
+#  自定义文案（默认留空）
+#
+#  键名和 NEUTRAL 一样：pre_menstrual / menstrual / follicular / ovulation /
+#  luteal / post_menstrual / due_check / first_time
+#
+#  留空 = 一直用 NEUTRAL。填了的阶段才走自己这套，没填的回落 NEUTRAL。
+# ======================================================================
+
+COUPLE: dict[str, list[str]] = {}
+
+# ======================================================================
 #  科普小百科
 # ======================================================================
 
@@ -89,17 +116,30 @@ SCIENCE = {
 }
 
 
-def get_reminder(phase: str, couple_mode: bool = True, **kwargs) -> str:
+def _pick(options: list[str], key: int | None = None) -> str:
+    """按日期轮转挑一条，**不用随机**。
+
+    随机的问题：池子只有几条时，`random.choice` 会连续撞同一条
+    （实测前一天和当天推了同一句）。轮转能保证一轮全部用完才重复，
+    而且不用存状态——日期本身就是游标。
     """
-    根据阶段获取一条随机提醒文案。
-    - phase: menstrual / follicular / ovulation / luteal / pre_menstrual / post_menstrual / due_check / first_time
-    - couple_mode: 兼容参数，保留签名。开源版一律使用中性版文案。
-    """
-    pool = NEUTRAL
-    options = pool.get(phase, [])
     if not options:
         return ""
-    text = random.choice(options)
+    if key is None:
+        key = date.today().toordinal()
+    return options[key % len(options)]
+
+
+def get_reminder(phase: str, couple_mode: bool = True, **kwargs) -> str:
+    """根据阶段取一条提醒文案。
+
+    - phase: menstrual / follicular / ovulation / luteal / pre_menstrual /
+             post_menstrual / due_check / first_time
+    - couple_mode: True 时优先用 COUPLE（自定义文案），该阶段没填就回落 NEUTRAL
+    - 其余关键字参数会替换文案里的 {占位符}
+    """
+    pool = COUPLE if couple_mode and COUPLE.get(phase) else NEUTRAL
+    text = _pick(pool.get(phase, []))
     for k, v in kwargs.items():
         text = text.replace("{" + k + "}", str(v))
     return text

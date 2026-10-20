@@ -60,10 +60,16 @@ async def selene_record(
 
     start_date 必填，ISO格式(YYYY-MM-DD)。end_date 可选。
     flow: 1少/2中/3多。pain: 0-3。mood/body_note 自由填。"""
-    db.add_period(
-        start_date=start_date, end_date=end_date,
-        flow=flow, pain=pain, mood=mood, body_note=body_note, note=note,
-    )
+    try:
+        db.add_period(
+            start_date=start_date, end_date=end_date,
+            flow=flow, pain=pain, mood=mood, body_note=body_note, note=note,
+        )
+    except ValueError as e:
+        # 重复 / 日期重叠。**不能假装成功**——模型看到「已记录」但其实没写，
+        # 比直接报错更糟：她会以为记上了，之后发现没有。
+        return json.dumps({"success": False, "message": f"没有记录：{e}"}, ensure_ascii=False)
+
     periods = db.get_periods()
     now = db.current_cycle_status()
 

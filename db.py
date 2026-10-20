@@ -104,17 +104,48 @@ def _ensure_columns():
 
 def add_period(start_date: str, end_date: str = "", flow: int = 2,
                pain: int = 0, mood: str = "", body_note: str = "", note: str = "") -> int:
-    """新增一条经期记录，返回记录 id。"""
+    """新增一条经期记录，返回记录 id。
+
+    ★ 2026-10-20 加了两道校验（之前是无条件 INSERT）：
+      1. 同一个 start_date 只允许一条 → 重复抛 ValueError
+      2. 新日期落在某条**已结束**的经期区间内 → 抛 ValueError（end_date 为空的
+         不参与判断，否则一条没填结束日期的记录会挡住之后所有日期）
+
+    为什么加在这一层而不是只改 MCP：MCP 的 selene_record、storage.py、
+    以后任何调用方都走这里，堵在源头一次就够。
+
+    起因：2026-09-20 那天被记了两条（#10/#11），周期数算成 5 而不是 4，
+    真实均值被拉成 22.5 天（实际是稳定的 30 天）。
+    """
     conn = get_db()
-    cur = conn.execute(
-        "INSERT INTO periods (start_date, end_date, flow, pain, mood, body_note, note) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (start_date, end_date, flow, pain, mood, body_note, note)
-    )
-    conn.commit()
-    row_id = cur.lastrowid
-    conn.close()
-    return row_id
+    try:
+        dup = conn.execute(
+            "SELECT id FROM periods WHERE start_date = ? ORDER BY id DESC LIMIT 1",
+            (start_date,),
+        ).fetchone()
+        if dup:
+            raise ValueError(f"{start_date} 已经记录过了（#{dup[0]}），没有重复写入")
+
+        overlap = conn.execute(
+            "SELECT id, start_date, end_date FROM periods "
+            "WHERE start_date < ? AND end_date != '' AND end_date >= ? LIMIT 1",
+            (start_date, start_date),
+        ).fetchone()
+        if overlap:
+            raise ValueError(
+                f"{start_date} 落在已有经期 #{overlap[0]}"
+                f"（{overlap[1]}→{overlap[2]}）里，请核对日期"
+            )
+
+        cur = conn.execute(
+            "INSERT INTO periods (start_date, end_date, flow, pain, mood, body_note, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (start_date, end_date, flow, pain, mood, body_note, note)
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
 
 
 def get_periods(limit: int = 12) -> list[dict]:
